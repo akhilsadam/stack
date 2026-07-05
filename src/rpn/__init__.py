@@ -33,7 +33,7 @@ This module provides:
 All modules are designed for ``torch`` tensors and GPU acceleration.
 """
 
-from .compiler import RPNCompiler
+# from .compiler import RPNCompiler
 from .embeddings import (
     VOCAB_SIZE,
     SCALAR_TOKEN_ID,
