@@ -1,0 +1,13 @@
+auto/
+runs/
+wandb/
+__pycache__
+**.ipynb
+lightning_logs/
+.sw/
+.venv/
+dist/
+vectorspace.egg-info/
+.pytest_cache
+**.nc
+**.npy

@@ -1,0 +1,37 @@
+[project]
+name = "vectorspace"
+version = "0.0.0"
+description = "another vector database, but continuous"
+authors = [
+    {name = "Akhil Sadam", email = "sadam.akhil@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "lightning",
+    "torch",
+    "einops",
+    "tqdm",
+    "matplotlib",
+    "pyyaml",
+    "pytest",
+]
+
+[options.packages.find]
+where = "src"
+
+[build-system]
+requires = [
+    "uv>=0.7.20",
+    "setuptools",
+]
+
+
+[tool.pytest.ini_options]
+pythonpath = "src"
+addopts = [
+    "--import-mode=importlib",
+    "--capture=no",
+    '-vvv'
+    ]
