@@ -101,6 +101,47 @@ class TokenEmbedding(nn.Module):
         else:
             nn.init.normal_(self.embedding.weight)
 
+    def dequantize(self, _ids):
+        emb = F.normalize(self.embedding(_ids), p=2, dim=-1)
+        if self.training:
+            weights = F.normalize(self.embedding.weight, p=2, dim=-1).detach()
+            
+            cos_sim = torch.mm(weights, weights.t())
+            
+            # Clamp for numerical stability before arccos
+            cos_sim = torch.clamp(cos_sim, -1.0 + 1e-7, 1.0 - 1e-7)
+            
+            # 3. Convert to angular distances (radians)
+            angles = torch.acos(cos_sim)
+            
+            # Ignore self-angle (0.0) by filling the diagonal with a large number
+            angles.fill_diagonal_(float('inf'))
+            
+            # 4. Find the minimum angular distance to the closest neighbor
+            min_angles = angles.min(dim=1).values
+            
+            # 5. Extract the specific angular limits for this batch
+            batch_min_angle = min_angles[_ids]
+            
+            # 6. Maximum safe rotation angle is exactly half the distance to the neighbor
+            # Apply a 0.95 safety factor so it never perfectly touches the boundary
+            max_rotation = (batch_min_angle / 2.0) * 0.95
+            
+            # 7. Sample a random noise angle uniformly distributed in [-max_rotation, max_rotation]
+            # Reshape to [batch, seq_len, 1] for broadcasting
+            noise_angle = (torch.rand_like(batch_min_angle) * 2.0 - 1.0) * max_rotation
+            noise_angle = noise_angle.unsqueeze(-1)
+            
+            # 8. Generate a random direction vector orthogonal to the embedding
+            raw_noise = torch.randn_like(emb)
+            # Project out the component parallel to 'emb' to make it strictly orthogonal
+            orthogonal_dir = raw_noise - torch.sum(raw_noise * emb, dim=-1, keepdim=True) * emb
+            orthogonal_dir = F.normalize(orthogonal_dir, p=2, dim=-1)
+            
+            return emb * torch.cos(noise_angle) + orthogonal_dir * torch.sin(noise_angle)
+        else:
+            return emb
+
     def to(self, device):
         self.device = device
         self.embedding.to(device)
@@ -117,7 +158,7 @@ class TokenEmbedding(nn.Module):
         _ids = torch.tensor([[rep._id for rep in reps] for reps in token_reps], dtype=torch.long, device=self.device)
         _mags = torch.tensor([[rep._mag for rep in reps] for reps in token_reps], dtype=torch.float, device=self.device).unsqueeze(-1)
         
-        token_embeddings = F.normalize(self.embedding(_ids), p=2, dim=-1) # (batch_size, seq_length, embedding_dim - physical_dim)
+        token_embeddings = self.dequantize(_ids)  # (batch_size, seq_length, embedding_dim - physical_dim)
         embeddings = torch.cat([token_embeddings, _mags], dim=-1) # (batch_size, seq_length, embedding_dim)
         
         return embeddings
