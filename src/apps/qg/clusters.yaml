@@ -1,6 +1,6 @@
 vis: true
 vis_every: 100
-vis_folder: space
+vis_folder: _output
 clusters:
   - name: u-vel
     strings:

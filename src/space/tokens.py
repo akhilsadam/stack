@@ -36,7 +36,7 @@ class TokenRep():
 
 @dataclass
 class Vocab():
-    def __init__(self, tokens: List[Token], seq_length: int = 64):
+    def __init__(self, tokens: List[Token]):
         self.tokens = \
             [Token("<unk>", 1), Token("<scalar>", 0), *tokens]
         self.token_to_id = {token.token: i for i, token in enumerate(self.tokens)}
@@ -45,8 +45,6 @@ class Vocab():
 
         self.pad_token_id = self.token_to_id["<unk>"]
         self.scalar_token_id = self.token_to_id["<scalar>"]
-        
-        self.seq_length = seq_length
         
     def __len__(self):
         return len(self.tokens)
@@ -59,14 +57,14 @@ class Vocab():
         except ValueError:
             return TokenRep(self.token_to_id.get(token_str.lower(), self.pad_token_id), 0.0)
 
-    def tokenize_str(self, string: str) -> List[TokenRep]:
+    def tokenize_str(self, string: str, seq_length: int = 64) -> List[TokenRep]:
         tokens = string.strip().split()
         out = [self.rep_from_str(token) for token in tokens]
         # Pad or truncate to seq_length
-        if len(out) < self.seq_length:
-            out.extend([TokenRep(self.pad_token_id, 0.0)] * (self.seq_length - len(out)))
+        if len(out) < seq_length:
+            out.extend([TokenRep(self.pad_token_id, 0.0)] * (seq_length - len(out)))
         else:
-            out = out[:self.seq_length]
+            out = out[:seq_length]
         return out
     
     def detokenize_reps(self, reps: List[int], mags: List[float]) -> str:
@@ -82,12 +80,13 @@ class Vocab():
 # TokenEmbedding
 class TokenEmbedding(nn.Module):
     
-    def __init__(self, vocab: Vocab, embedding_dim: int = 8, physical_dim: int = 1):
+    def __init__(self, vocab: Vocab, seq_len: int = 64, embed_dim: int = 8, phys_dim: int = 1):
         super().__init__()
         self.vocab = vocab
-        self.embedding_dim = embedding_dim
-        self.physical_dim = physical_dim
-        self.embedding = nn.Embedding(len(vocab), embedding_dim - physical_dim) # concat with _mag
+        self.seq_len = seq_len
+        self.embed_dim = embed_dim
+        self.phys_dim = phys_dim
+        self.embedding = nn.Embedding(len(vocab), embed_dim - phys_dim) # concat with _mag
         self._init_embedding_weights()
         
         self.arity = torch.tensor([token.arity for token in vocab.tokens], dtype=torch.long)
@@ -95,8 +94,7 @@ class TokenEmbedding(nn.Module):
         self.device = 'cpu'
         
     def _init_embedding_weights(self):
-        emb_dim = self.embedding.weight.shape[1]
-        if emb_dim >= len(self.vocab):
+        if self.embed_dim >= len(self.vocab):
             nn.init.orthogonal_(self.embedding.weight)
         else:
             nn.init.normal_(self.embedding.weight)
@@ -150,62 +148,157 @@ class TokenEmbedding(nn.Module):
     def forward(self, strings: List[str]) -> torch.Tensor:
         """
         strings: List of input strings
-        returns: Tensor of shape (batch_size, max_seq_len, embedding_dim)
+        returns: Tensor of shape (batch_size, max_seq_len, embed_dim)
         """
         batch_size = len(strings)
-        token_reps = [self.vocab.tokenize_str(s) for s in strings]
+        token_reps = [self.vocab.tokenize_str(s, self.seq_len) for s in strings]
 
         _ids = torch.tensor([[rep._id for rep in reps] for reps in token_reps], dtype=torch.long, device=self.device)
         _mags = torch.tensor([[rep._mag for rep in reps] for reps in token_reps], dtype=torch.float, device=self.device).unsqueeze(-1)
         
-        token_embeddings = self.dequantize(_ids)  # (batch_size, seq_length, embedding_dim - physical_dim)
-        embeddings = torch.cat([token_embeddings, _mags], dim=-1) # (batch_size, seq_length, embedding_dim)
+        # token_embeddings = self.dequantize(_ids)  # (batch_size, seq_length, embed_dim - phys_dim)
+        token_embeddings = F.normalize(self.embedding(_ids), p=2, dim=-1)
+        embeddings = torch.cat([token_embeddings, _mags], dim=-1) # (batch_size, seq_length, embed_dim)
         
         return embeddings
-
-
-    def reverse(self, embeddings: torch.Tensor) -> List[str]:
+    
+    def reverse(self, embeddings: torch.Tensor, max_seq_len: Optional[Union[int, torch.Tensor]] = None) -> List[str]:
         """
-        embeddings: Tensor of shape (batch_size, max_seq_len, embedding_dim)
+        embeddings: Tensor of shape (batch_size, current_seq_len, embed_dim)
+        max_seq_len: Can be an int, or a 1D tensor of shape (batch_size,) containing 
+                     the randomized target generation length for each batch item.
+                     Defaults to current_seq_len if None.
         returns: List of output strings
-
-        RPN/postfix stack decode. `count` = size of the stack of finished
-        values: starts at 0, each token of arity a does count -= a; count += 1.
-        A token is legal only if a <= count, and only if the result is still
-        reachable to count == 1 in the steps that remain. PAD is legal once
-        count == 1 and, once chosen, all later tokens are forced to PAD.
         """
-        batch_size, max_seq_len, _ = embeddings.shape
+        batch_size, current_seq_len, _ = embeddings.shape
         device = embeddings.device
 
-        token_embeddings = embeddings[..., :-self.physical_dim]   # (B, T, D-1)
-        mags = embeddings[..., -self.physical_dim:].squeeze(-1)   # (B, T)
+        # 1. Resolve random or variable target lengths per batch item
+        if max_seq_len is None:
+            target_lens = torch.full((batch_size,), current_seq_len, dtype=torch.long, device=device)
+        elif isinstance(max_seq_len, torch.Tensor):
+            target_lens = max_seq_len.to(device=device, dtype=torch.long)
+        else: # plain integer
+            target_lens = torch.full((batch_size,), max_seq_len, dtype=torch.long, device=device)
+
+        # The absolute maximum loop boundary required across this batch execution
+        absolute_max_len = int(target_lens.max().item())
+
+        token_embeddings = embeddings[..., :-self.phys_dim]   # (B, current_seq_len, D-1)
+        mags = embeddings[..., -self.phys_dim:].squeeze(-1)   # (B, current_seq_len)
 
         arity = self.arity.to(device)
         pad_id = self.pad_id
         max_arity = int(arity.max().item())
 
-        out_ids = torch.full((batch_size, max_seq_len), pad_id, dtype=torch.long, device=device)
+        out_ids = torch.full((batch_size, absolute_max_len), pad_id, dtype=torch.long, device=device)
         count = torch.zeros(batch_size, dtype=torch.long, device=device)
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
-        for t in range(max_seq_len):
-            chosen, count, finished = _decode_step(
-                step_embedding=token_embeddings[:, t, :],
-                vocab_weight=self.embedding.weight,
-                count=count,
-                finished=finished,
-                arity=arity,
-                pad_id=pad_id,
-                remaining_steps_after=max_seq_len - t - 1,
-                max_arity=max_arity,
-            )
+        for t in range(absolute_max_len):
+            if finished.all():
+                break
+
+            # Handle indexing safety if we're evaluating beyond the input tensor frames
+            embedding_idx = min(t, current_seq_len - 1)
+            step_emb = token_embeddings[:, embedding_idx, :]
+
+            # Force individual rows to finish if they've hit their specific randomized target length limit
+            hit_target_limit = (t >= target_lens)
+            finished = finished | hit_target_limit
+
+            # Dynamically tracking remaining steps per batch item:
+            # remaining_steps_after = target_len - current_index - 1
+            remaining_steps = torch.clamp(target_lens - t - 1, min=0)
+
+            # --- Batched Evaluation Step (Inlined & Tensorized to support variable remaining_steps) ---
+            vocab_dirs = F.normalize(self.embedding.weight, p=2, dim=-1)   
+            logits = step_emb @ vocab_dirs.T
+
+            # Tensorized feasibility mask evaluation
+            count_ = count.unsqueeze(-1)          # (B, 1)
+            arity_ = arity.unsqueeze(0)           # (1, vocab_size)
+            rem_steps_ = remaining_steps.unsqueeze(-1) # (B, 1)
+
+            pops_too_much = arity_ > count_
+            resulting_count = count_ - arity_ + 1
+            
+            # 1 + remaining_steps * (max_arity - 1) calculated independently per batch row
+            reachable_count = 1 + rem_steps_ * (max_arity - 1)
+            too_slow = resulting_count > reachable_count
+            illegal = pops_too_much | too_slow
+
+            logits = logits.masked_fill(illegal, float('-inf'))
+            logits = _gate_pad(logits, pad_id, count)
+
+            chosen = torch.argmax(logits, dim=-1)
+            chosen = torch.where(finished, torch.full_like(chosen, pad_id), chosen)
+
+            is_pad = (chosen == pad_id) & (~finished)
+            count = torch.where(finished | is_pad, count, count - arity[chosen] + 1)
+            finished = finished | is_pad
+            # -----------------------------------------------------------------------------------------
+
             out_ids[:, t] = chosen
 
-        return [
-            self.vocab.detokenize_reps(out_ids[b].tolist(), mags[b].tolist())
-            for b in range(batch_size)
-        ]
+        # Dynamic string detokenization based on each row's unique evaluated length slice
+        out_strings = []
+        for b in range(batch_size):
+            row_target_len = int(target_lens[b].item())
+            row_ids = out_ids[b, :row_target_len].tolist()
+            
+            # Reconstruct trailing magnitude arrays based on individual row lengths safely
+            if row_target_len <= current_seq_len:
+                row_mags = mags[b, :row_target_len].tolist()
+            else:
+                row_mags = mags[b].tolist() + [0.0] * (row_target_len - current_seq_len)
+                
+            out_strings.append(self.vocab.detokenize_reps(row_ids, row_mags))
+
+        return out_strings
+
+    # def reverse(self, embeddings: torch.Tensor) -> List[str]:
+    #     """
+    #     embeddings: Tensor of shape (batch_size, max_seq_len, embed_dim)
+    #     returns: List of output strings
+
+    #     RPN/postfix stack decode. `count` = size of the stack of finished
+    #     values: starts at 0, each token of arity a does count -= a; count += 1.
+    #     A token is legal only if a <= count, and only if the result is still
+    #     reachable to count == 1 in the steps that remain. PAD is legal once
+    #     count == 1 and, once chosen, all later tokens are forced to PAD.
+    #     """
+    #     batch_size, max_seq_len, _ = embeddings.shape
+    #     device = embeddings.device
+
+    #     token_embeddings = embeddings[..., :-self.phys_dim]   # (B, T, D-1)
+    #     mags = embeddings[..., -self.phys_dim:].squeeze(-1)   # (B, T)
+
+    #     arity = self.arity.to(device)
+    #     pad_id = self.pad_id
+    #     max_arity = int(arity.max().item())
+
+    #     out_ids = torch.full((batch_size, max_seq_len), pad_id, dtype=torch.long, device=device)
+    #     count = torch.zeros(batch_size, dtype=torch.long, device=device)
+    #     finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+    #     for t in range(max_seq_len):
+    #         chosen, count, finished = _decode_step(
+    #             step_embedding=token_embeddings[:, t, :],
+    #             vocab_weight=self.embedding.weight,
+    #             count=count,
+    #             finished=finished,
+    #             arity=arity,
+    #             pad_id=pad_id,
+    #             remaining_steps_after=max_seq_len - t - 1,
+    #             max_arity=max_arity,
+    #         )
+    #         out_ids[:, t] = chosen
+
+    #     return [
+    #         self.vocab.detokenize_reps(out_ids[b].tolist(), mags[b].tolist())
+    #         for b in range(batch_size)
+    #     ]
     
     # def reverse(self, embeddings: torch.Tensor) -> List[str]:
     #     """

@@ -33,7 +33,7 @@ def build_vocab() -> Vocab:
         ("dealias", 1),
     ]
     tokens = [Token(name, arity) for name, arity in token_specs]
-    return Vocab(tokens=tokens, seq_length=12)
+    return Vocab(tokens=tokens)
 
 
 def make_batch_strings() -> List[str]:
@@ -48,13 +48,13 @@ def make_batch_strings() -> List[str]:
         "x y -",
     ]
 
-
-@pytest.mark.parametrize("embedding_dim", [3, 8])
-def test_token_embedding_round_trip_is_invertible(embedding_dim: int) -> None:
+@pytest.mark.parametrize("seq_len", [12])
+@pytest.mark.parametrize("embed_dim", [3, 8])
+def test_token_embedding_round_trip_is_invertible(seq_len: int, embed_dim: int) -> None:
     torch.manual_seed(7)
 
     vocab = build_vocab()
-    embedder = TokenEmbedding(vocab=vocab, embedding_dim=embedding_dim, physical_dim=1)
+    embedder = TokenEmbedding(vocab=vocab, seq_len=seq_len, embed_dim=embed_dim, phys_dim=1)
 
     batch_strings = make_batch_strings()
     embeddings = embedder(batch_strings)
