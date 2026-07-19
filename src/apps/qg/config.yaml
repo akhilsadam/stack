@@ -1,0 +1,10 @@
+# Core Training Parameters
+seed: 42
+iter: 4000
+batch: 16
+seq_len: 12
+dim: 8
+depth: 1
+steps: 4
+lr: 1e-3
+grid_size: 8
