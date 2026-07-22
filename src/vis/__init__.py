@@ -5,7 +5,7 @@ import os
 import yaml
 from typing import List, Dict, Optional
 import torch
-from .atlas import plot_atlas
+from .atlas import plot_atlas, plot_confusion
 
 
 class SpaceVis:
@@ -36,6 +36,10 @@ class SpaceVis:
             for _ in cluster.get('strings', [])
         ]
 
+        self._names = [
+            cluster.get('name', str(i)) for i, cluster in enumerate(self.clusters)
+        ]
+
         self.snapshots = []
 
         if self.vis:
@@ -54,10 +58,14 @@ class SpaceVis:
 
     def plot(self, it, **kwargs) -> str:
         output_path = os.path.join(self.vis_folder, f'atlas_{it:3d}.png')
+        coutput_path = os.path.join(self.vis_folder, f'confusion_{it:3d}.png')
+        snapshots = torch.stack(self.snapshots, dim=1).cpu().clone()
+        plot_confusion(snapshots, self._strings, output=coutput_path)
         plot_atlas(              
-            torch.stack(self.snapshots, dim=1).cpu().clone(), 
+            snapshots,
             self._strings,                                                                                                                                                                                                 
             self._labels,
+            self._names,
             output=output_path,
             **kwargs
         )

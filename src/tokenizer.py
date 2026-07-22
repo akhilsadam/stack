@@ -7,8 +7,10 @@ import os
 
 from arch.flow import NF
 from arch.layer import MLP
-from arch.dist import SNE as metric
-# from arch.dist import D as metric
+# from arch.dist import SNE as metric
+# from arch.dist import log_odds_SNE as metric
+
+from arch.dist import D as metric
 from space.tokens import TokenEmbedding as TE
 
 import wandb
@@ -34,13 +36,13 @@ class Tokenizer(nn.Module):
         self.f_n = MLP(seq_len, dim, depth)
 
         self.kcrit = nn.KLDivLoss(reduction='batchmean', log_target=True)
-        # self.crit = nn.MSELoss()
-        self.crit = nn.KLDivLoss(reduction='batchmean', log_target=True)
+        self.crit = nn.MSELoss()
+        # self.crit = nn.KLDivLoss(reduction='batchmean', log_target=True)
 
         # Train BOTH the embedding and the flow
         self.opt = torch.optim.Adam(self.parameters(), lr=lr)
 
-        self.max_condition_num = 40
+        self.max_condition_num = 1000
         self.k = 5
         self.debug = True
 
@@ -75,20 +77,24 @@ class Tokenizer(nn.Module):
 
     def loss(self, strings=None):
 
-        sample_vector = self.v_noise()
-        tok = self.sample_token_from_vector(sample_vector)
+        # tok = self.sample_token_from_vector(sample_vector) # extremely BAD idea, can cause distribution to collapse (flow only learns "safe" distribution)
+        tok = self.token_embed.generate(self.v_noise())
+
+        # unquantized "samples" VQ loss
+        token = self.token_embed(self.token_embed.reverse(tok))
+        loss_commit = F.mse_loss(tok, token.detach())
+
 
         max_seq_len = tok.shape[1]
-        random_seq_len = torch.randint(0, max_seq_len, (self.batch,), device=tok.device)
-
-        # commit loss
-        _str = self.token_embed.reverse(tok, random_seq_len)
-        _tok = self.token_embed(_str)
-        loss_commit = F.mse_loss(_tok, tok)
+        r = torch.rand(self.batch, device=tok.device)
+        # b = 6.0
+        # y = (r - 0.02)**b + 1 - (0.98)**b  # weighted toward small seqs
+        random_seq_len = ((r) * max_seq_len).long()
 
         # Sample from the token space directly (no flow yet)
         if strings is None:
-            token = tok
+            _str = self.token_embed.reverse(tok, random_seq_len)
+            token = self.token_embed(_str)
         else:
             token = self.token_embed(strings)
 
@@ -105,14 +111,15 @@ class Tokenizer(nn.Module):
 
         # Debug: log unstable RPN expressions
         if valid_mask.sum() < self.batch:
-            strings = self.token_embed.reverse(token)
-            for i, (mask, s) in enumerate(zip(valid_mask, strings)):
+            _strings = self.token_embed.reverse(token)
+            for i, (mask, s) in enumerate(zip(valid_mask, _strings)):
                 if not mask:
                     condition_num  = torch.linalg.norm(value_flat[i]) / self._eval.norm
                     print(f"UNSTABLE (|cond|={condition_num:.2e}): {s}")
 
         n_valid = valid_mask.sum()
         if n_valid < self.k:
+            print("Warning: not enough valid samples")
             return False
 
         # Compute semantic distances
@@ -122,13 +129,36 @@ class Tokenizer(nn.Module):
         z, n = self.forward(token[valid_mask])
         d_hat = metric(z, self.k)
         
-        # Mask out diagonal where targets are -inf (log(0))
-        mask = ~torch.eye(n_valid, dtype=torch.bool, device=d.device)
-        # Compute KLDivLoss only on the off-diagonal elements
-        loss_align = F.kl_div(d_hat[mask], d[mask], reduction='sum', log_target=True) / n_valid
+        # # Mask out diagonal where targets are -inf (log(0))        
+        # # Compute KLDivLoss only on the off-diagonal elements
+        # mask = ~torch.eye(n_valid, dtype=torch.bool, device=d.device)
+        # loss_align = F.kl_div(d_hat[mask], d[mask], reduction='sum', log_target=True) / n_valid
+
+        if strings:
+            from matplotlib import pyplot as plt
+            plt.figure(figsize=(10,10))
+            plt.imshow(d.cpu().numpy() , cmap='inferno')
+            plt.colorbar()
+            # label by string
+            xticklabels = strings
+            plt.xticks(np.arange(len(xticklabels)), xticklabels, rotation=90)
+            plt.yticks(np.arange(len(xticklabels)), xticklabels)
+
+            plt.savefig(f'dist_.png')
+            plt.close()
+            
+        # mask = mask & (d < 1e-5)
+
+        # loss_align = 10 * torch.sqrt(d + 1e-8).mean() # self.crit(d_hat, d) +
+        # mask = ~torch.eye(d.shape[0], dtype=torch.bool, device=d.device)
+        loss_align = self.crit(d_hat, d)
+
+        # print("D_hat sample:", d_hat[mask][:5])
+        # print("D target sample:", d[mask][:5])
+        # print("Are they identical?:", torch.allclose(d_hat[mask], d[mask]))
 
         n_logits = F.log_softmax(self.noise(n).view(n_valid,-1), dim=1)
-        loss_dist = self.kcrit(F.log_softmax(n.view(n_valid,-1), dim=1), n_logits) #+ self.kcrit(F.log_softmax(z.view(n_valid,-1), dim=1), n_logits)
+        loss_dist = self.kcrit(F.log_softmax(n.view(n_valid,-1), dim=1), n_logits) + self.kcrit(F.log_softmax(z.view(n_valid,-1), dim=1), n_logits)
 
         return loss_align, loss_commit, loss_dist
 
@@ -150,21 +180,23 @@ class Tokenizer(nn.Module):
                     continue
                 align_loss, commit_loss, dist_loss = result
                 
-                # Alternate or add loss on the cluster/vis strings so the flow trains on them
-                cluster_strings = self.vis._strings
-                cluster_result = self.loss(cluster_strings)
-                if cluster_result is not False:
-                    c_align_loss, _, _ = cluster_result
-                    align_loss = align_loss + c_align_loss
-                
                 wandb.log({'align_loss': align_loss.item(), 'commit_loss': commit_loss.item(), 'dist_loss': dist_loss.item()})
-                total_loss = align_loss + 0.1 * commit_loss + 0.01 * dist_loss
+                total_loss = align_loss + 0.1 * commit_loss + 0.1 * dist_loss
+
+                # strings = self.vis.snapshot(i, self.embed)
+                # val_align_loss, val_commit_loss, _ = self.loss(strings)
+                # wandb.log({'val_align_loss': val_align_loss.item(), 'val_commit_loss': val_commit_loss.item()})
+                # # cheating to debug
+                # total_loss = total_loss + val_align_loss
+
+
                 total_loss.backward()
                 self.opt.step()
-                
-                strings = self.vis.snapshot(i, self.embed)
-                val_align_loss, val_commit_loss, _ = self.loss(strings)
-                wandb.log({'val_align_loss': val_align_loss.item(), 'val_commit_loss': val_commit_loss.item()})
+
+                with torch.no_grad():
+                    strings = self.vis.snapshot(i, self.embed)
+                    val_align_loss, val_commit_loss, _ = self.loss(strings)
+                    wandb.log({'val_align_loss': val_align_loss.item(), 'val_commit_loss': val_commit_loss.item()})
 
                 # Debug gradient norm
                 if self.debug and i % 100 == 0:

@@ -45,7 +45,7 @@ def compute_embedding(
     if method == "tsne":
         if dim > pca_dims and B*N > pca_dims:
             pca = PCA(n_components=pca_dims, random_state=random_state)
-            latents_reduced = pca.fit_transform(snapshots.reshape(-1, dim))
+            latents_reduced = pca.fit_transform(snapshots.reshape(-1, dim)).reshape((B, N, -1))[:, -1, :]
         else:
             latents_reduced = snapshots.reshape(-1, dim)
         tsne = TSNE(
@@ -63,11 +63,34 @@ def compute_embedding(
         raise ValueError(f"Unknown method: {method}")
     return embedding
 
+def plot_confusion(snapshots, strings, output="confusion.png"):
+    """
+    Plots confusion matrix (pairwise distances) of the latent space.
+    """
+    B = snapshots.shape[0]
+    x = snapshots[None, :,-1,:].reshape(1,B,-1)
+    d = torch.cdist(x, x, p=2.0)[0]
+    nd = d / (torch.max(torch.abs(d)).detach() + 1e-8)
+    plt.figure(figsize=(10,10))
+    plt.imshow(torch.log(nd + 1e-8).cpu().numpy() , cmap='inferno')
+    plt.colorbar()
+    plt.xticks(np.arange(len(strings)), strings, rotation=90)
+    plt.yticks(np.arange(len(strings)), strings)
+    plt.title("Confusion matrix of the latent space (distances in log)")
+    plt.xlabel("Equation")
+    plt.ylabel("Equation")
+    plt.savefig(output)
+    plt.close()
+    
+    
+    
+
 
 def plot_atlas(
     snapshots: torch.Tensor,
     strings: List[str],
     labels: List[int],
+    names: List[str],
     output: str = "atlas.png",
     method: str = "pca",
     show_trajectories: bool = True,
@@ -131,7 +154,7 @@ def plot_atlas(
             cid = labels[idx]
             color = cluster_id_to_color.get(cid, "gray")
             alpha = 0.8
-            linewidth = 2.0
+            linewidth = 0.5
         else:
             color = "gray"
             alpha = 0.4
@@ -149,24 +172,24 @@ def plot_atlas(
             )
 
         # Mark start point (Iteration 0)
-        plt.scatter(
-            points_arr[0, 0],
-            points_arr[0, 1],
-            color=color,
-            s=120,
-            alpha=alpha,
-            marker="o",
-            edgecolors="white",
-            linewidth=1.0,
-            zorder=2,
-        )
+        # plt.scatter(
+        #     points_arr[0, 0],
+        #     points_arr[0, 1],
+        #     color=color,
+        #     s=120,
+        #     alpha=alpha,
+        #     marker="o",
+        #     edgecolors="white",
+        #     linewidth=1.0,
+        #     zorder=2,
+        # )
         # Mark end point (Final Iteration)
         plt.scatter(
             points_arr[-1, 0],
             points_arr[-1, 1],
             color=color,
-            s=200,
-            alpha=alpha,
+            s=250,
+            alpha=1.0,
             marker="*",
             edgecolors="white",
             linewidth=1.5,
@@ -176,7 +199,7 @@ def plot_atlas(
     # Legend for cluster IDs
     if cluster_id_to_color:
         legend_elements = [
-            Patch(facecolor=cluster_id_to_color[cid], label=f"Cluster {cid}")
+            Patch(facecolor=cluster_id_to_color[cid], label=f"{names[cid]}")
             for cid in sorted(cluster_id_to_color.keys())
         ]
         plt.legend(handles=legend_elements, loc="best", framealpha=0.9)

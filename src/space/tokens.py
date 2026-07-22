@@ -145,7 +145,7 @@ class TokenEmbedding(nn.Module):
         self.embedding.to(device)
         return super().to(device)
         
-    def forward(self, strings: List[str]) -> torch.Tensor:
+    def forward(self, strings: List[str], noisy=False) -> torch.Tensor:
         """
         strings: List of input strings
         returns: Tensor of shape (batch_size, max_seq_len, embed_dim)
@@ -156,11 +156,19 @@ class TokenEmbedding(nn.Module):
         _ids = torch.tensor([[rep._id for rep in reps] for reps in token_reps], dtype=torch.long, device=self.device)
         _mags = torch.tensor([[rep._mag for rep in reps] for reps in token_reps], dtype=torch.float, device=self.device).unsqueeze(-1)
         
-        # token_embeddings = self.dequantize(_ids)  # (batch_size, seq_length, embed_dim - phys_dim)
+        # if noisy:
+        #     token_embeddings = F.normalize(self.dequantize(_ids), p=2, dim=-1)  # (batch_size, seq_length, embed_dim - phys_dim)
+        # else:
         token_embeddings = F.normalize(self.embedding(_ids), p=2, dim=-1)
-        embeddings = torch.cat([token_embeddings, _mags], dim=-1) # (batch_size, seq_length, embed_dim)
+        embeddings = torch.cat([token_embeddings, torch.tanh(_mags)], dim=-1) # (batch_size, seq_length, embed_dim)
         
         return embeddings
+
+    def generate(self, noise):
+        tok_noise = noise[:, :, :-1]
+        mag_noise = noise[:, :, -1:]
+        tok_noise = F.normalize(tok_noise, p=2, dim=-1)
+        return torch.cat([tok_noise, mag_noise], dim=-1)
     
     def reverse(self, embeddings: torch.Tensor, max_seq_len: Optional[Union[int, torch.Tensor]] = None) -> List[str]:
         """
@@ -186,6 +194,7 @@ class TokenEmbedding(nn.Module):
 
         token_embeddings = embeddings[..., :-self.phys_dim]   # (B, current_seq_len, D-1)
         mags = embeddings[..., -self.phys_dim:].squeeze(-1)   # (B, current_seq_len)
+        mags = torch.atanh(torch.clamp(mags, -1 + 1e-4, 1 - 1e-4))
 
         arity = self.arity.to(device)
         pad_id = self.pad_id
