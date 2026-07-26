@@ -1,4 +1,5 @@
-from typing import List
+from typing import List, Union, Sequence
+from dataclasses import dataclass
 import traceback
 import torch
 
@@ -12,6 +13,140 @@ from omegaconf import OmegaConf
 import logging
 
 from space.tokens import Token, Vocab
+
+
+@dataclass
+class _LaTeXNode:
+    text: str
+    prec: int
+    is_leaf: bool = False
+
+
+def rpn_to_latex(rpn: Union[str, Sequence[str]]) -> str:
+    """Converts an RPN token string or sequence into a formatted LaTeX string."""
+    if isinstance(rpn, str):
+        tokens = [t for t in rpn.strip().split() if t]
+    else:
+        tokens = list(rpn)
+
+    if not tokens:
+        return ""
+
+    greek_vars = {
+        "psi": r"\psi",
+        "ph": r"\hat{\psi}",
+        "omega": r"\omega",
+        "alpha": r"\alpha",
+        "beta": r"\beta",
+        "gamma": r"\gamma",
+        "delta": r"\delta",
+        "theta": r"\theta",
+        "phi": r"\phi",
+        "pi": r"\pi",
+        "sigma": r"\sigma",
+        "lambda": r"\lambda",
+        "mu": r"\mu",
+        "nu": r"\nu",
+        "rho": r"\rho",
+        "tau": r"\tau",
+        "chi": r"\chi",
+        "eta": r"\eta",
+        "zeta": r"\zeta",
+        "epsilon": r"\epsilon",
+    }
+
+    def _paren(node: _LaTeXNode, min_prec: int) -> str:
+        if node.prec < min_prec:
+            return rf"\left({node.text}\right)"
+        return node.text
+
+    stack: List[_LaTeXNode] = []
+
+    for token in tokens:
+        t_low = token.lower()
+
+        # Binary operators
+        if t_low in ("+", "-", "*", "mul", "/", "div", "^", "pow", "jacobian"):
+            if len(stack) < 2:
+                raise ValueError(f"Invalid RPN expression: insufficient operands for binary operator '{token}'")
+            b = stack.pop()
+            a = stack.pop()
+
+            if t_low == "+":
+                text = f"{_paren(a, 1)} + {_paren(b, 1)}"
+                prec = 1
+            elif t_low == "-":
+                text = f"{_paren(a, 1)} - {_paren(b, 2)}"
+                prec = 1
+            elif t_low in ("*", "mul"):
+                text = f"{_paren(a, 2)} \cdot {_paren(b, 2)}"
+                prec = 2
+            elif t_low in ("/", "div"):
+                text = rf"\frac{{{a.text}}}{{{b.text}}}"
+                prec = 4
+            elif t_low in ("^", "pow"):
+                text = f"{{{_paren(a, 4)}}}^{{{b.text}}}"
+                prec = 3
+            elif t_low == "jacobian":
+                text = rf"J\left({a.text}, {b.text}\right)"
+                prec = 4
+            stack.append(_LaTeXNode(text, prec))
+
+        # Unary operators
+        elif t_low in (
+            "neg", "dx", "dy", "lap", "invlap", "nabla", "del", "laplacian",
+            "delta", "del2", "invlaplacian", "lapinv", "sqrt", "cos", "sin",
+            "cosh", "sinh", "tanh", "exp", "square", "cube", "abs"
+        ):
+            if len(stack) < 1:
+                raise ValueError(f"Invalid RPN expression: insufficient operands for unary operator '{token}'")
+            a = stack.pop()
+
+            if t_low == "neg":
+                text = f"-{_paren(a, 2)}"
+                prec = 1
+            elif t_low in ("dx",):
+                text = rf"\partial_x {_paren(a, 4)}"
+                prec = 4
+            elif t_low in ("dy",):
+                text = rf"\partial_y {_paren(a, 4)}"
+                prec = 4
+            elif t_low in ("lap", "laplacian", "delta", "del2"):
+                text = rf"\nabla^2 {_paren(a, 4)}"
+                prec = 4
+            elif t_low in ("invlap", "invlaplacian", "lapinv"):
+                text = rf"\nabla^{{-2}} {_paren(a, 4)}"
+                prec = 4
+            elif t_low in ("nabla", "del"):
+                text = rf"\nabla {_paren(a, 4)}"
+                prec = 4
+            elif t_low == "sqrt":
+                text = rf"\sqrt{{{a.text}}}"
+                prec = 4
+            elif t_low in ("cos", "sin", "cosh", "sinh", "tanh", "exp"):
+                text = rf"\{t_low}\left({a.text}\right)"
+                prec = 4
+            elif t_low == "square":
+                text = f"{{{_paren(a, 4)}}}^2"
+                prec = 4
+            elif t_low == "cube":
+                text = f"{{{_paren(a, 4)}}}^3"
+                prec = 4
+            elif t_low == "abs":
+                text = rf"\left|{a.text}\right|"
+                prec = 4
+            stack.append(_LaTeXNode(text, prec))
+
+        # Operands (variables / constants)
+        else:
+            text = greek_vars.get(t_low, token)
+            stack.append(_LaTeXNode(text, 4, is_leaf=True))
+
+    if len(stack) != 1:
+        raise ValueError(f"Invalid RPN expression: ended with {len(stack)} items on stack for input '{rpn}'")
+
+    return str(stack[0].text)
+
 
 
 def build_vocab() -> Vocab:
@@ -190,8 +325,9 @@ class QGEvaluator:
             # val is output
 
             # we want sobolev norm:
-            gxy = torch.gradient(val, dim=(-2, -1))
-            out = torch.stack([val, *gxy], dim=-1)
+            # gxy = torch.gradient(val, dim=(-2, -1))
+            # out = torch.stack([val, *gxy], dim=-1)
+            out = val
 
             return out
 
@@ -212,6 +348,10 @@ class QGEvaluator:
     def estimate(self, rpn: str):
         return self.eval_one(rpn)
 
+    def to_latex(self, rpn: str) -> str:
+        return rpn_to_latex(rpn)
+
     def __call__(self, strings: List[str]) -> torch.Tensor:
         self.random_state()
         return torch.stack([self.eval_one(s) for s in strings], dim=0)
+

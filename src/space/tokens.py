@@ -265,60 +265,6 @@ class TokenEmbedding(nn.Module):
             out_strings.append(self.vocab.detokenize_reps(row_ids, row_mags))
 
         return out_strings
-
-    # def reverse(self, embeddings: torch.Tensor) -> List[str]:
-    #     """
-    #     embeddings: Tensor of shape (batch_size, max_seq_len, embed_dim)
-    #     returns: List of output strings
-
-    #     RPN/postfix stack decode. `count` = size of the stack of finished
-    #     values: starts at 0, each token of arity a does count -= a; count += 1.
-    #     A token is legal only if a <= count, and only if the result is still
-    #     reachable to count == 1 in the steps that remain. PAD is legal once
-    #     count == 1 and, once chosen, all later tokens are forced to PAD.
-    #     """
-    #     batch_size, max_seq_len, _ = embeddings.shape
-    #     device = embeddings.device
-
-    #     token_embeddings = embeddings[..., :-self.phys_dim]   # (B, T, D-1)
-    #     mags = embeddings[..., -self.phys_dim:].squeeze(-1)   # (B, T)
-
-    #     arity = self.arity.to(device)
-    #     pad_id = self.pad_id
-    #     max_arity = int(arity.max().item())
-
-    #     out_ids = torch.full((batch_size, max_seq_len), pad_id, dtype=torch.long, device=device)
-    #     count = torch.zeros(batch_size, dtype=torch.long, device=device)
-    #     finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
-
-    #     for t in range(max_seq_len):
-    #         chosen, count, finished = _decode_step(
-    #             step_embedding=token_embeddings[:, t, :],
-    #             vocab_weight=self.embedding.weight,
-    #             count=count,
-    #             finished=finished,
-    #             arity=arity,
-    #             pad_id=pad_id,
-    #             remaining_steps_after=max_seq_len - t - 1,
-    #             max_arity=max_arity,
-    #         )
-    #         out_ids[:, t] = chosen
-
-    #     return [
-    #         self.vocab.detokenize_reps(out_ids[b].tolist(), mags[b].tolist())
-    #         for b in range(batch_size)
-    #     ]
-    
-    # def reverse(self, embeddings: torch.Tensor) -> List[str]:
-    #     """
-    #     embeddings: Tensor of shape (batch_size, max_seq_len, embedding_dim)
-    #     returns: List of output strings
-    #     """
-        
-    #     # non autoregressive, doesn't consider _ids arity...
-    #     _ids = torch.argmax(self.embedding.weight @ embeddings[..., :-self.physical_dim].transpose(-1, -2), dim=-1) # (batch_size, seq_length, embed_dim)
-    #     _mags = embeddings[..., -self.physical_dim:].squeeze(-1) # (batch_size, seq_length)
-        
     
 def _reachable_count(remaining_steps_after: int, max_arity: int) -> int:
     """

@@ -1,7 +1,7 @@
 class NF:    
     @staticmethod
-    def _fwd(x, f_z, f_n, steps):
-        return NF.map_fwd(x, x, f_z, f_n, steps)
+    def _fwd(x, rx, f_z, f_n, steps):
+        return NF.map_fwd(x, rx, f_z, f_n, steps)
     
     @staticmethod
     def _rev(z, n, f_z, f_n, steps):

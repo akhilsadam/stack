@@ -82,6 +82,9 @@ def D(x, k=5, **kwargs):
 	# x = torch.clamp(x, min=-1e15, max=1e15)
 	B = x.shape[0]
 	x_flat = x.view(1, B, -1) #/ (x.shape[-1])
+
+	x_flat = F.normalize(x_flat, p=2, dim=-1)
+
 	x_flat = torch.where(x_flat < precision, 0, x_flat)
 
 	d = torch.cdist(x_flat, x_flat, p=2.0)[0] # BxB

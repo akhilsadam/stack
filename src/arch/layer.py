@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .rope import RotaryPositionalEmbeddings
+
 class Sine(nn.Module):
     def forward(self, x):
         return torch.sin(x)
@@ -140,4 +142,5 @@ class MLP(nn.Module):
         ])
 
     def forward(self, x):  # (B, seq_len, dim) -> (B, seq_len, dim)
-        return self.blocks(x)
+        y = self.blocks(x)
+        return y

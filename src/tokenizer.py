@@ -58,16 +58,16 @@ class Tokenizer(nn.Module):
         device = next(self.parameters()).device
         z = torch.randn((self.batch, self.seq_len, self.dim), device=device)
         return z / dim(z)
-
+        
     def forward(self, tok):
-        return NF._fwd(tok, self.f_z, self.f_n, self.steps)
+        return NF._fwd(tok, tok, self.f_z, self.f_n, self.steps)
 
     def reverse(self, z, n):
         return NF._rev(z, n, self.f_z, self.f_n, self.steps)
 
     def embed(self, strings):
         tok = self.token_embed(strings)
-        return NF._fwd(tok, self.f_z, self.f_n, self.steps)[0]
+        return NF._fwd(tok, tok, self.f_z, self.f_n, self.steps)[0]
 
     def value(self, tok):
         strings = self.token_embed.reverse(tok)
@@ -78,12 +78,21 @@ class Tokenizer(nn.Module):
     def loss(self, strings=None):
 
         # tok = self.sample_token_from_vector(sample_vector) # extremely BAD idea, can cause distribution to collapse (flow only learns "safe" distribution)
-        tok = self.token_embed.generate(self.v_noise())
+        # tok = self.token_embed.generate(self.v_noise()) # not great either, doesn't learn "good/stable" PDEs
+    
+        # TODO: sampling
+        # tok = 0.9 * self.sample_token_from_vector(self.v_noise()) + 0.1 * self.v_noise()
+
+        toka = self.token_embed.generate(self.v_noise())
+        tokb = self.sample_token_from_vector(self.v_noise())
+        r2 = torch.rand(self.batch, device=toka.device)
+
+        tok = torch.where(r2[:,None,None] < 0.5, toka, tokb)
+
 
         # unquantized "samples" VQ loss
         token = self.token_embed(self.token_embed.reverse(tok))
         loss_commit = F.mse_loss(tok, token.detach())
-
 
         max_seq_len = tok.shape[1]
         r = torch.rand(self.batch, device=tok.device)
@@ -95,8 +104,10 @@ class Tokenizer(nn.Module):
         if strings is None:
             _str = self.token_embed.reverse(tok, random_seq_len)
             token = self.token_embed(_str)
+            # print("\\\\ ".join(self._eval.to_latex(s) for s in _str))
         else:
             token = self.token_embed(strings)
+            # print("\\\\ ".join(self._eval.to_latex(s) for s in strings))
 
         # Get semantic evaluations
         value = self.value(token)
@@ -128,7 +139,7 @@ class Tokenizer(nn.Module):
         # Now apply flow and get latent distances
         z, n = self.forward(token[valid_mask])
         d_hat = metric(z, self.k)
-        
+
         # # Mask out diagonal where targets are -inf (log(0))        
         # # Compute KLDivLoss only on the off-diagonal elements
         # mask = ~torch.eye(n_valid, dtype=torch.bool, device=d.device)
