@@ -1,4 +1,5 @@
 import math
+import random
 from enum import IntEnum, auto
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 from dataclasses import dataclass
@@ -6,6 +7,9 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+# from .arity import get_tree_coords
 
 # TODO extend to multidimensionality / matrix / vector / tensor equations
 ## needs to add physical dimension to token
@@ -33,6 +37,19 @@ class TokenRep():
     def __init__(self, _id: int, _mag: float):
         self._id = _id
         self._mag = _mag
+
+class Node:
+    def __init__(self, name, arity):
+        self.name = name
+        self.arity = arity
+        self.children = []
+
+    def to_rpn(self):
+        rpn = []
+        for child in self.children:
+            rpn.extend(child.to_rpn())
+        rpn.append(self.name)
+        return rpn
 
 @dataclass
 class Vocab():
@@ -72,6 +89,7 @@ class Vocab():
         for _id, _mag in zip(reps, mags):
             if _id == self.scalar_token_id:
                 tokens.append(f'{_mag:.4g}')
+                # tokens.append(f'1.0') # debug
             else:
                 tokens.append(self.id_to_token.get(_id, "<UNK>"))
         
@@ -145,7 +163,7 @@ class TokenEmbedding(nn.Module):
         self.embedding.to(device)
         return super().to(device)
         
-    def forward(self, strings: List[str], noisy=False) -> torch.Tensor:
+    def fwd(self, strings: List[str], noisy=False) -> torch.Tensor:
         """
         strings: List of input strings
         returns: Tensor of shape (batch_size, max_seq_len, embed_dim)
@@ -162,7 +180,15 @@ class TokenEmbedding(nn.Module):
         token_embeddings = F.normalize(self.embedding(_ids), p=2, dim=-1)
         embeddings = torch.cat([token_embeddings, torch.tanh(_mags)], dim=-1) # (batch_size, seq_length, embed_dim)
         
-        return embeddings
+        return embeddings, _ids
+
+    def forward(self, strings):
+        return self.fwd(strings)[0]
+
+    # def forward_with_depth(self, strings):
+    #     emb, ids = self.fwd(strings)
+    #     arity = self.arity[ids]
+    #     return emb, *get_tree_coords(arity)
 
     def generate(self, noise):
         tok_noise = noise[:, :, :-1]
@@ -265,6 +291,95 @@ class TokenEmbedding(nn.Module):
             out_strings.append(self.vocab.detokenize_reps(row_ids, row_mags))
 
         return out_strings
+
+    def generate_random_rpn(self, max_high_arity_nodes: int = 4, num_unary: int = 2) -> str:
+        """
+        Generates a valid RPN sequence string dynamically using the initialized vocabulary.
+        Extracts operators and leaves based strictly on their defined arity.
+        """
+
+        # 1. Group vocabulary by arity dynamically
+        operators_by_arity = {}
+        for token_id, token_str in self.vocab.id_to_token.items():
+            if token_id == self.vocab.pad_token_id:
+                continue
+            ar = self.vocab.id_to_arity[token_id]
+            if ar not in operators_by_arity:
+                operators_by_arity[ar] = []
+            operators_by_arity[ar].append(token_str)
+
+        high_arities = sorted([k for k in operators_by_arity.keys() if k >= 2], reverse=True)
+        
+        # 2. Sample operator counts for k >= 2
+        counts = {}
+        total_high_nodes = 0
+        for k in high_arities:
+            c = random.randint(0, max(0, max_high_arity_nodes - total_high_nodes))
+            counts[k] = c
+            total_high_nodes += c
+
+        # Enforce at least one high-arity operator to build a tree if we only drew 0s
+        if total_high_nodes == 0 and 2 in operators_by_arity:
+            counts[2] = 1
+
+        # 3. Compute exact required leaves based on sampled higher-arity nodes
+        num_leaves = 1 + sum((k - 1) * count for k, count in counts.items())
+        pool = [Node("LEAF", arity=0) for _ in range(num_leaves)]
+
+        # 4. Build skeleton tree (bottom-up leaf pairing)
+        for k in high_arities:
+            for _ in range(counts.get(k, 0)):
+                if len(pool) < k:
+                    break
+                op_name = random.choice(operators_by_arity[k])
+                parent = Node(op_name, arity=k)
+                parent.children = [pool.pop(random.randint(0, len(pool) - 1)) for _ in range(k)]
+                pool.append(parent)
+
+        # Collapse any remaining unconnected subtrees
+        while len(pool) > 1 and 2 in operators_by_arity:
+            op_name = random.choice(operators_by_arity[2])
+            parent = Node(op_name, arity=2)
+            parent.children = [pool.pop(0), pool.pop(0)]
+            pool.append(parent)
+
+        root = pool[0] if pool else Node("<scalar>", 0)
+
+        def collect_nodes(node):
+            nodes = [node]
+            for c in node.children:
+                nodes.extend(collect_nodes(c))
+            return nodes
+
+        # 5. Insert Unary Operators (k = 1) at random tree depths
+        if 1 in operators_by_arity:
+            for _ in range(num_unary):
+                all_nodes = collect_nodes(root)
+                target = random.choice(all_nodes)
+                
+                # Insert unary node above a randomly chosen branch/leaf
+                if target.children:
+                    idx = random.randint(0, len(target.children) - 1)
+                    child = target.children[idx]
+                    unary_node = Node(random.choice(operators_by_arity[1]), arity=1)
+                    unary_node.children = [child]
+                    target.children[idx] = unary_node
+
+        # 6. Fill LEAF placeholders with physical variables or constants
+        leaves = operators_by_arity.get(0, ["<scalar>"])
+        for node in collect_nodes(root):
+            if node.name == "LEAF":
+                node.name = random.choice(leaves)
+                
+                # Resolve continuous constant scalar values
+                if node.name == "<scalar>":
+                    node.name = f"{random.uniform(-3.0, 3.0):.4f}"
+
+        return " ".join(root.to_rpn())
+
+    def generate_rpns(self, batch):
+        return [self.generate_random_rpn() for i in range(batch)]
+
     
 def _reachable_count(remaining_steps_after: int, max_arity: int) -> int:
     """
@@ -337,4 +452,4 @@ def _decode_step(
     new_count = torch.where(finished | is_pad, count, count - arity[chosen] + 1)
     new_finished = finished | is_pad
 
-    return chosen, new_count, new_finished        
+    return chosen, new_count, new_finished

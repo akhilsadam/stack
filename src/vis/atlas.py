@@ -72,7 +72,7 @@ def plot_confusion(snapshots, strings, output="confusion.png"):
     d = torch.cdist(x, x, p=2.0)[0]
     nd = d / (torch.max(torch.abs(d)).detach() + 1e-8)
     plt.figure(figsize=(10,10))
-    plt.imshow(torch.log(nd + 1e-8).cpu().numpy() , cmap='inferno')
+    plt.imshow(torch.log(nd + 1e-8).clamp(min=-7.5).cpu().numpy() , cmap='inferno')
     plt.colorbar()
     plt.xticks(np.arange(len(strings)), strings, rotation=90)
     plt.yticks(np.arange(len(strings)), strings)

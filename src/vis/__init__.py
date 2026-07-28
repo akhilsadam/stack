@@ -61,14 +61,14 @@ class SpaceVis:
         coutput_path = os.path.join(self.vis_folder, f'confusion_{it:3d}.png')
         snapshots = torch.stack(self.snapshots, dim=1).cpu().clone()
         plot_confusion(snapshots, self._strings, output=coutput_path)
-        plot_atlas(              
-            snapshots,
-            self._strings,                                                                                                                                                                                                 
-            self._labels,
-            self._names,
-            output=output_path,
-            **kwargs
-        )
+        # plot_atlas(              
+        #     snapshots,
+        #     self._strings,                                                                                                                                                                                                 
+        #     self._labels,
+        #     self._names,
+        #     output=output_path,
+        #     **kwargs
+        # )
         return output_path
 
     #   def save_snapshots(self, path: Optional[str] = None) -> str:

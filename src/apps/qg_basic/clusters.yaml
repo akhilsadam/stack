@@ -43,6 +43,7 @@ clusters:
   - name: vorticity
     strings:
       - psi lap
+      - q invlap lap
       - q
 
   - name: streamfunction

@@ -96,7 +96,7 @@ def D(x, k=5, **kwargs):
 
 	nd = d / (torch.max(torch.abs(d)).detach() + 1e-8)
 	# return nd #(d2 + 1e-8).sqrt()
-	return torch.log(nd + 1e-8)
+	return torch.log(nd + 1e-8).clamp(min=-7.5)
 	# return torch.log(1 + nd)
 	# return torch.log(torch.clamp(nd, min=1e-6))
 

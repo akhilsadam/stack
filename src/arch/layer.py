@@ -91,7 +91,7 @@ class FastAttentionBlock(nn.Module):
         super().__init__()
         # seq_len is kept in signature so it can act as a drop-in replacement,
         # but attention natively handles variable sequence lengths!
-        channel_hidden = channel_hidden or 4 * dim
+        channel_hidden = channel_hidden or 8 * dim
         
         self.norm1 = nn.LayerNorm(dim)
         # batch_first=True accepts and outputs (B, L, D) tensors
@@ -104,11 +104,19 @@ class FastAttentionBlock(nn.Module):
             nn.Linear(channel_hidden, dim)
         )
 
+        attn_mask = nn.Transformer.generate_square_subsequent_mask(
+            seq_len
+        )
+        self.register_buffer('attn_mask', attn_mask, persistent=False)
+
     def forward(self, x):  # (B, L, D) -> (B, L, D)
         # --- Multi-Head Self-Attention (Token Mixing) ---
         norm_x = self.norm1(x)
+        L = x.shape[1]
+
+        attn_mask = self.attn_mask[:L,:L]
         # Query, Key, Value are all norm_x for self-attention
-        attn_out, _ = self.attn(norm_x, norm_x, norm_x, need_weights=False)
+        attn_out, _ = self.attn(norm_x, norm_x, norm_x, attn_mask=attn_mask, need_weights=False, is_causal=True)
         x = x + attn_out
 
         # --- Channel MLP (Channel Mixing) ---
@@ -126,7 +134,7 @@ class MLP(nn.Module):
     sequence processor.
     """
 
-    def __init__(self, seq_len, dim, depth=3, num_heads=8, token_hidden=None, channel_hidden=None):
+    def __init__(self, seq_len, dim, depth=3, num_heads=32, token_hidden=None, channel_hidden=None, out_dim=None):
         super().__init__()
         self.seq_len = seq_len
         self.dim = dim
@@ -136,11 +144,23 @@ class MLP(nn.Module):
         #     for _ in range(depth)
         # ])
 
-        self.blocks = nn.Sequential(*[
-            FastAttentionBlock(seq_len=seq_len, dim=dim, num_heads=num_heads, channel_hidden=channel_hidden)
-            for _ in range(depth)
-        ])
+        # self.rope = RotaryPositionalEmbeddings(d=dim-1) # IGNORE physical dims!
 
-    def forward(self, x):  # (B, seq_len, dim) -> (B, seq_len, dim)
+        blocks = []
+        for _ in range(depth):
+            blocks.extend([
+                RotaryPositionalEmbeddings(d=dim-1, base=seq_len), # very important it seems, esp every layer too!
+                FastAttentionBlock(seq_len=seq_len, dim=dim, num_heads=num_heads, channel_hidden=channel_hidden)
+            ])
+
+        if out_dim is not None:
+            blocks.append(
+                nn.Linear(dim, out_dim)
+            )
+        
+        self.blocks = nn.Sequential(*blocks)
+
+    def forward(self, x, pos=None):  # (B, seq_len, dim) -> (B, seq_len, dim)
+        # x = self.rope(x, pos)
         y = self.blocks(x)
         return y

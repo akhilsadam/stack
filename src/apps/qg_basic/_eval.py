@@ -196,7 +196,7 @@ class QGEvaluator:
 
     def __init__(self, grid_size: int = 32, seed: int = 42, batch=2, **kwargs):
         torch.manual_seed(seed)
-        self.grid = CartesianGrid(Nx=grid_size, Ny=grid_size, device=torch.device("cpu"))
+        self.grid = CartesianGrid(Nx=grid_size, Ny=grid_size, device=torch.device("cpu"), precision='float64')
         self.derivative = Derivative(self.grid)
         self.compiler = RPNCompiler(self.derivative, _NoParams())
 
@@ -214,7 +214,7 @@ class QGEvaluator:
                 "Ny": grid_size,
                 "Lx": 6.283185307179586,
                 "Ly": 6.283185307179586,
-                "precision": "float32",
+                "precision": "float64",
                 "device": "cpu"
             },
             "time": {
@@ -276,7 +276,7 @@ class QGEvaluator:
     
     def construct_state(self):
         return _state(
-            qh=to_spectral(self.q_phys),
+            qh=self.derivative.dealias(to_spectral(self.q_phys)),
             dt=self.param.time.dt,
             flow=lambda s: None,
             derivative=self.derivative,
@@ -315,11 +315,15 @@ class QGEvaluator:
             compiled = self.compiler.compile(rpn)
             field_h = torch.zeros_like(state.qh)
             if compiled.linear_operator is not None:
-                field_h = field_h + compiled.linear_operator * state.qh
+                field_h = field_h + (compiled.linear_operator * state.qh)
             if compiled.nonlinear_source is not None:
                 field_h = field_h + compiled.nonlinear_source(state)
-            val = to_physical(field_h)
-            if val.dim() == 4:
+
+            # val = torch.view_as_real(field_h)
+            field_h[...,0,0] = 0.0 # toss zeroth mode since lost in invlap.
+
+            val = to_physical(self.derivative.dealias(field_h))
+            if val.dim() >= 4:
                 val = val.squeeze()
             
             # val is output
