@@ -9,7 +9,7 @@ dim: 32
 phys_dim: 4
 # should be divisible by 4 and sufficiently less than dim
 num_heads: 8
-depth: 8
+depth: 4
 steps: 1
 lr: 3e-4
  # 3e-4

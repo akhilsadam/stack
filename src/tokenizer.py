@@ -108,7 +108,7 @@ class Tokenizer(nn.Module):
 
         # sample_vector = self.v_noise()
         # tok = self.sample_token_from_vector(sample_vector) # extremely BAD idea, can cause distribution to collapse (flow only learns "safe" distribution)
-        tok = self.token_embed.generate(self.v_noise()) # not great either, doesn't learn "good/stable" PDEs
+        # tok = self.token_embed.generate(self.v_noise()) # not great either, doesn't learn "good/stable" PDEs
         # TODO: sampling
         # tok = 0.9 * self.sample_token_from_vector(self.v_noise()) + 0.1 * self.v_noise()
 
@@ -125,11 +125,7 @@ class Tokenizer(nn.Module):
         # base[:, :head_len, :] = noise[:, :head_len, :]
         # tok = self.token_embed.generate(base)
 
-
-        # unquantized "samples" VQ loss, on complete random tokens -- prevents collapse of dist
-        token = self.token_embed(self.token_embed.reverse(tok))
-
-        loss_commit = 0.0*F.mse_loss(tok, token.detach())
+        ###---------------------------------------
 
         _str = self.token_embed.generate_rpns(self.batch)
 
@@ -178,20 +174,23 @@ class Tokenizer(nn.Module):
         # Now apply flow and get latent distances
         z, n = self.forward(token[valid_mask])
 
-        # if strings is None:
-        #     v = self.d_buffer(v)
-        #     v_hat = self.dh_buffer(z)
-        # else:
-        #     v_hat = z
-        v_hat = z
+        # check reversibility into commit loss:
+        n2 = self.noise(z)
+        tok2 = self.reverse(z, n2)
+        tok3 = self.token_embed(self.token_embed.reverse(tok2)) # breaks graph 
+        z2, _ = self.forward(tok3)
+        loss_commit = F.mse_loss(tok2, tok3) + F.mse_loss(z, z2)
 
-        # tok_buf = self.dh_buffer(token[valid_mask])
-        # v_hat,n_hat = self.forward(tok_buf)
-        # z = v_hat[-n_valid:]
-        # n = n_hat[-n_valid:]
+
+
+        # # unquantized "samples" VQ loss, on complete random tokens -- prevents collapse of dist
+        # tok = self.token_embed.generate(self.v_noise())
+        # token = self.token_embed(self.token_embed.reverse(tok))
+        # loss_commit = F.mse_loss(tok, token.detach())
+
 
         d = metric(v)
-        d_hat = metric(v_hat)
+        d_hat = metric(z)
 
         # # Mask out diagonal where targets are -inf (log(0))        
         # # Compute KLDivLoss only on the off-diagonal elements
