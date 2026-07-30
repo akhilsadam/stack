@@ -32,18 +32,13 @@ def main():
     tokenizer = Tokenizer(
         vocab=vocab,
         _eval=evaluator,
-        batch=config.get("batch", 64),
-        seq_len=config.get("seq_len", 12),
-        dim=config.get("dim", 8),
-        depth=config.get("depth", 2),
-        steps=config.get("steps", 2),
-        lr=float(config.get("lr", 1e-3)),
-        _iter=config.get("_iter", 2000),
-        vis=_vis(cluster_path)
+        vis=_vis(cluster_path),
+        **config,
     )
 
     print("Training finished successfully.")
 
 
 if __name__ == "__main__":
+
     main()

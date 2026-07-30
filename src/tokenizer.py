@@ -27,6 +27,7 @@ class Buffer(nn.Module):
 
     def __call__(self, new):
         if self.queue is None:
+            self.batch = max(self.batch, new.shape[0])
             self.queue = torch.empty((self.batch, *new.shape[1:]), device=new.device)
 
         with torch.no_grad():
@@ -38,11 +39,11 @@ class Buffer(nn.Module):
         return torch.cat([self.queue[-self.Q:-N], new], dim=0)
 
 class Tokenizer(nn.Module):
-    def __init__(self, vocab, _eval, batch, seq_len, dim, depth, steps=5, lr=1e-3, _iter=4000,
-                 vis=None):
+    def __init__(self, vocab, _eval, batch, seq_len, dim, phys_dim, depth, steps=5, lr=1e-3, _iter=4000,
+                 vis=None, **kwargs):
         super().__init__()
         self.vocab = vocab
-        self.token_embed = TE(vocab, seq_len, dim)
+        self.token_embed = TE(vocab, seq_len, dim, phys_dim)
         self._eval = _eval
 
         self.steps = steps
@@ -51,15 +52,17 @@ class Tokenizer(nn.Module):
         self.batch = batch
         self._iter = _iter
 
-        self.f_z = MLP(seq_len, dim, depth)
-        self.f_n = MLP(seq_len, dim, depth)
+        tok_dim = dim - phys_dim
+
+        self.f_z = MLP(seq_len, dim, tok_dim, depth)
+        self.f_n = MLP(seq_len, dim, tok_dim, depth)
 
         self.kcrit = nn.KLDivLoss(reduction='batchmean', log_target=True)
         self.crit = nn.MSELoss()
         # self.crit = nn.KLDivLoss(reduction='batchmean', log_target=True)
 
         # Train BOTH the embedding and the flow
-        self.opt = torch.optim.Adam(self.parameters(), lr=lr)
+        self.opt = torch.optim.Adam(self.parameters(), lr=float(lr))
 
         self.max_condition_num = 1000
         self.k = 5
@@ -67,9 +70,9 @@ class Tokenizer(nn.Module):
 
         self.vis = vis
 
-        buf_len = 4
-        self.d_buffer = Buffer(buf_len*batch)
-        self.dh_buffer = Buffer(buf_len*batch)
+        # buf_len = 1
+        # self.d_buffer = Buffer(buf_len*batch)
+        # self.dh_buffer = Buffer(buf_len*batch)
 
 
         self._train()
@@ -106,7 +109,6 @@ class Tokenizer(nn.Module):
         # sample_vector = self.v_noise()
         # tok = self.sample_token_from_vector(sample_vector) # extremely BAD idea, can cause distribution to collapse (flow only learns "safe" distribution)
         tok = self.token_embed.generate(self.v_noise()) # not great either, doesn't learn "good/stable" PDEs
-    
         # TODO: sampling
         # tok = 0.9 * self.sample_token_from_vector(self.v_noise()) + 0.1 * self.v_noise()
 
@@ -126,8 +128,8 @@ class Tokenizer(nn.Module):
 
         # unquantized "samples" VQ loss, on complete random tokens -- prevents collapse of dist
         token = self.token_embed(self.token_embed.reverse(tok))
-        loss_commit = F.mse_loss(tok, token.detach())
 
+        loss_commit = 0.0*F.mse_loss(tok, token.detach())
 
         _str = self.token_embed.generate_rpns(self.batch)
 
@@ -176,15 +178,17 @@ class Tokenizer(nn.Module):
         # Now apply flow and get latent distances
         z, n = self.forward(token[valid_mask])
 
-        # v = self.d_buffer(v)
-        # v_hat = self.dh_buffer(z)
+        # if strings is None:
+        #     v = self.d_buffer(v)
+        #     v_hat = self.dh_buffer(z)
+        # else:
+        #     v_hat = z
         v_hat = z
 
         # tok_buf = self.dh_buffer(token[valid_mask])
         # v_hat,n_hat = self.forward(tok_buf)
         # z = v_hat[-n_valid:]
         # n = n_hat[-n_valid:]
-
 
         d = metric(v)
         d_hat = metric(v_hat)

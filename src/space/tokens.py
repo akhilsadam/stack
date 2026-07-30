@@ -158,6 +158,13 @@ class TokenEmbedding(nn.Module):
         else:
             return emb
 
+
+    def fwd_phys(self, x):
+        return torch.tanh(x).repeat_interleave(self.phys_dim, dim=-1)
+
+    def rev_phys(self, x):
+        return torch.atanh(torch.clamp(x, -1 + 1e-4, 1 - 1e-4).mean(dim=-1))
+
     def to(self, device):
         self.device = device
         self.embedding.to(device)
@@ -178,7 +185,7 @@ class TokenEmbedding(nn.Module):
         #     token_embeddings = F.normalize(self.dequantize(_ids), p=2, dim=-1)  # (batch_size, seq_length, embed_dim - phys_dim)
         # else:
         token_embeddings = F.normalize(self.embedding(_ids), p=2, dim=-1)
-        embeddings = torch.cat([token_embeddings, torch.tanh(_mags)], dim=-1) # (batch_size, seq_length, embed_dim)
+        embeddings = torch.cat([token_embeddings, self.fwd_phys(_mags)], dim=-1) # (batch_size, seq_length, embed_dim)
         
         return embeddings, _ids
 
@@ -191,8 +198,8 @@ class TokenEmbedding(nn.Module):
     #     return emb, *get_tree_coords(arity)
 
     def generate(self, noise):
-        tok_noise = noise[:, :, :-1]
-        mag_noise = noise[:, :, -1:]
+        tok_noise = noise[:, :, :-self.phys_dim]
+        mag_noise = noise[:, :, -self.phys_dim:]
         tok_noise = F.normalize(tok_noise, p=2, dim=-1)
         return torch.cat([tok_noise, mag_noise], dim=-1)
     
@@ -220,7 +227,7 @@ class TokenEmbedding(nn.Module):
 
         token_embeddings = embeddings[..., :-self.phys_dim]   # (B, current_seq_len, D-1)
         mags = embeddings[..., -self.phys_dim:].squeeze(-1)   # (B, current_seq_len)
-        mags = torch.atanh(torch.clamp(mags, -1 + 1e-4, 1 - 1e-4))
+        mags = self.rev_phys(mags)
 
         arity = self.arity.to(device)
         pad_id = self.pad_id
@@ -292,7 +299,7 @@ class TokenEmbedding(nn.Module):
 
         return out_strings
 
-    def generate_random_rpn(self, max_high_arity_nodes: int = 4, num_unary: int = 2) -> str:
+    def generate_random_rpn(self, max_high_arity_nodes: int = 6, num_unary: int = 2) -> str:
         """
         Generates a valid RPN sequence string dynamically using the initialized vocabulary.
         Extracts operators and leaves based strictly on their defined arity.
