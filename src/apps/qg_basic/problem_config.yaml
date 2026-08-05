@@ -1,4 +1,5 @@
 PDE: q psi jacobian neg q lap 0.01 x * * + 
-PDE_init: q psi jacobian neg
+PDE_init: q 
 eval_steps: 1
 # PDE: q psi jacobian neg q lap 0.01 x * * +
+# 

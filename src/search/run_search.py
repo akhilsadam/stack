@@ -12,7 +12,7 @@ _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PKG not in sys.path:
     sys.path.insert(0, _PKG)
 
-from search.SGD_guided import SGD_guided
+from search.SGD_FM import SGD_FM
 from search.SGD_token import SGD_token
 from search.SGD import SGD
 
@@ -85,38 +85,11 @@ def main():
     #     log_every=search_cfg.get("log_every", 20),
     # )
 
-    sgd = SGD_token(
+    sgd = SGD_FM(
         tokenizer,
         evaluator=evaluator,
-        steps=search_cfg.get("steps", 200),
-        pop_size=search_cfg.get("pop_size", 64),
-        noise_std=search_cfg.get("noise_std", 0.5),
-        # train_every=1,
-        # train_steps=5,
     )
 
-    # sgd = SGD_guided(
-    #     tokenizer,
-    #     evaluator=evaluator,
-    #     steps=search_cfg.get("steps", 60),
-    #     pop_size=search_cfg.get("pop_size", 64),
-    #     noise_std=search_cfg.get("noise_std", 0.2),
-    #     lr=search_cfg.get("lr", 0.5),
-    #     lr_local=search_cfg.get("lr_local", 0.1),
-    #     log_every=search_cfg.get("log_every", 20),
-    # )
-
-
-    # sgd = SGD_guided(
-    #     tokenizer,
-    #     evaluator=evaluator,
-    #     steps=search_cfg.get("steps", 200),
-    #     pop_size=search_cfg.get("pop_size", 64),
-    #     noise_std=search_cfg.get("noise_std", 0.2),
-    #     lr=search_cfg.get("lr", 0.5),
-    #     lr_local=search_cfg.get("lr_local", 0.001),
-    #     log_every=search_cfg.get("log_every", 20),
-    # )
 
     print(f"\n{'='*60}")
     print(f"Target PDE:  {target_rpn}")

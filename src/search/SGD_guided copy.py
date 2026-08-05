@@ -12,43 +12,36 @@ def _flatten(x):
 
 
 class SGD_guided(nn.Module):
-    """Guided latent-space search using the target PDE's encoding as a compass.
+    """Online local-linear search with fine-tuned flow manifold.
 
-    Core idea
-    ---------
-    The tokenizer's alignment loss  MSE(D(z), D(v))  makes the flow's latent
-    space locally isometric to PDE-field space:  ‖z₁ − z₂‖ ≈ ‖D(v₁) − D(v₂)‖.
-    Therefore **encoding the target PDE through the flow** gives us ``z_target``,
-    and the vector ``z_target − z`` points in a direction that reduces PDE-field
-    distance to the target.
+    Core idea: the tokenizer's alignment loss  MSE(D(z), D(v))  is what
+    makes the flow's latent space locally linear w.r.t. PDE fields.
+    During search we **fine-tune the flow** on collected (string, field)
+    pairs, so that D(z) ≈ D(v) holds in the region of interest.  This
+    gives the ridge-regression linear model a meaningful signal.
 
-    Each step:
-    1. Perturb ``z`` → decode → evaluate → collect replay data.
-    2. **Fine-tune** the tokenizer so alignment holds for the collected region.
-    3. Re-encode target & best → ``z_target``, ``z``.
-    4. Primary step:          δ_guided = z_target − z          (compass)
-    5. Refinement (optional):  δ_local = −W  from ridge-regression on
-       the local perturbations (same as SGD_token).
-    6. ``z ← z + lr · normalize(δ_guided) + lr_local · δ_local``
+    Each outer step:
+    1. Perturb ``z`` in the flow's latent space, decode → evaluate → collect.
+    2. **Fine-tune** the tokenizer on the replay buffer (alignment + commit loss).
+    3. Re-encode the current best through the updated flow.
+    4. Fit a local linear model  δlog(L) ≈ W · ε  via dual ridge regression.
+    5. Step ``z`` along ``-W``.
     """
 
     def __init__(
         self,
         tokenizer,
         evaluator=None,
-        steps=100,
+        steps=10,
         pop_size=64,
-        noise_std=8.0,
-        lr=0.5,              # guided-step learning rate (compass strength)
-        lr_local=0.1,        # local linear-model refinement strength
-        log_every=20,
-        ridge_lambda=0.1,
-        buffer_size=64,
-        train_every=5,
-        train_steps=2,
-        train_batch=32,
-        train_lr=1e-4,
-        guided_norm=1.0,     # target norm for the guided step
+        noise_std=0.5,
+        lr=1e-1,
+        log_every=1,
+        buffer_size=128,
+        train_every=1,
+        train_steps=20,
+        train_batch=8,
+        train_lr=3e-4,
     ):
         super().__init__()
         self.tok = tokenizer
@@ -57,19 +50,18 @@ class SGD_guided(nn.Module):
         self.pop_size = pop_size
         self.noise_std = noise_std
         self.lr = lr
-        self.lr_local = lr_local
         self.log_every = log_every
-        self.ridge_lambda = ridge_lambda
         self.buffer_size = buffer_size
         self.train_every = train_every
         self.train_steps = train_steps
         self.train_batch = train_batch
-        self.guided_norm = guided_norm
 
         # Optimiser for online fine-tuning (separate from search)
         self.fine_opt = torch.optim.Adam(self.tok.parameters(), lr=train_lr)
 
         self._fixed_q = None
+
+        self.kcrit = nn.KLDivLoss(reduction='batchmean', log_target=True)
 
     # ── helpers ─────────────────────────────────────────────────────
 
@@ -90,7 +82,6 @@ class SGD_guided(nn.Module):
         return self.eval.target().detach()
 
     def _encode(self, rpn: str):
-        """Encode an RPN string through the tokenizer → (z, n)."""
         tok = self.tok.token_embed([rpn])
         z, n = self.tok.forward(tok)
         return z[0:1].detach(), n[0:1].detach()
@@ -126,7 +117,11 @@ class SGD_guided(nn.Module):
             z2, _ = self.tok.forward(tok3)
             commit = mse(tok2, tok3) + mse(z, z2)
 
-            loss = align + 0.1 * commit
+            n_logits = F.log_softmax(self.tok.noise(n).view(B, -1), dim=1)
+            loss_dist = self.kcrit(F.log_softmax(n.view(B, -1), dim=1), n_logits) \
+                        + self.kcrit(F.log_softmax(z.view(B, -1), dim=1), n_logits)   
+
+            loss = align + 0.1 * commit + 0.1 * loss_dist
             self.fine_opt.zero_grad()
             loss.backward()
             self.fine_opt.step()
@@ -136,37 +131,38 @@ class SGD_guided(nn.Module):
     # ── main entry point ────────────────────────────────────────────
 
     def search(self, init_pde, target_pde=None):
-        """Run guided search toward target_pde in the flow's latent space."""
+        """Run online fine-tuned search in the flow's latent space."""
         device = next(self.tok.parameters()).device
 
         self._fix_state()
         target = self._target_field(target_pde)
         target_flat = target.reshape(1, -1)
 
-        # Encode both the start and the target through the flow
-        z, n = self._encode(init_pde)
-        z_target, n_target = self._encode(target_pde)
-        z, z_target = z.to(device), z_target.to(device)
-        n, n_target = n.to(device), n_target.to(device)
-
         # Replay buffer for fine-tuning
         buf_str: list[str] = []
         buf_fld: list[torch.Tensor] = []
 
-        # Replay buffer for the local linear model (perturbations)
-        buf_eps: list[torch.Tensor] = []
+        # Replay buffer for the linear model (perturbations)
+        buf_pop: list[torch.Tensor] = []
         buf_dL: list[torch.Tensor] = []
 
         best_loss = float("inf")
         best_string = init_pde
 
-        for step in tqdm(range(self.steps), desc="SGD_guided search"):
-            # ── sample & evaluate (exploration) ─────────────────────
-            eps = torch.randn(self.pop_size, *z.shape[1:], device=device)
-            z_pop = z + self.noise_std * eps
+        tok_p = nn.Parameter(self.tok.token_embed([init_pde])).to(device)
+        opt = torch.optim.Adam([tok_p], lr=self.lr)
 
-            n_pop = n.expand_as(z_pop).clone()
-            strings, _ = self._decode(z_pop, n_pop)
+        for step in tqdm(range(self.steps), desc="SGD_guided search"):
+            # ── sample & evaluate ──────────────────────────────────
+            z_p, n_p = self.tok.forward(tok_p)
+            eps = torch.randn(self.pop_size, *z_p.shape[1:], device=device)
+
+            z_p_sample = z_p + self.noise_std * eps
+            n_p_sample = self.tok.noise(z_p_sample)
+            print(z_p_sample.shape, n_p_sample.shape)
+            tok_sample = self.tok.reverse(z_p_sample, n_p_sample)
+
+            strings = self.tok.token_embed.reverse(tok_sample.detach())
 
             print('\n'.join(strings))
 
@@ -177,22 +173,23 @@ class SGD_guided(nn.Module):
                 reduction="none",
             ).mean(dim=1)
             log_losses = torch.log(pde_losses.clamp(min=1e-10))
-            dL = log_losses - log_losses.mean()
+            dL = log_losses #- log_losses.mean()
 
-            # ── accumulate replay buffers ───────────────────────────
+            # ── accumulate replay buffer ───────────────────────────
             buf_str.extend(strings)
             buf_fld.append(fields.detach().cpu())
             if len(buf_str) > self.buffer_size:
                 n_remove = len(buf_str) - self.buffer_size
                 del buf_str[:n_remove]
+                # buf_fld stores one tensor per step; remove whole steps
                 n_step = len(buf_fld[0]) if buf_fld else 0
                 n_step_remove = (n_remove + n_step - 1) // max(n_step, 1)
                 del buf_fld[:n_step_remove]
 
-            buf_eps.append(eps.detach().cpu())
+            buf_pop.append(tok_sample.detach().cpu())
             buf_dL.append(dL.detach().cpu())
-            if len(buf_eps) > 3:
-                buf_eps.pop(0)
+            if len(buf_pop) > 3:          # keep only 3 most recent steps
+                buf_pop.pop(0)
                 buf_dL.pop(0)
 
             # ── online fine-tune the flow ──────────────────────────
@@ -200,40 +197,33 @@ class SGD_guided(nn.Module):
             if do_ft:
                 all_fld = torch.cat(buf_fld, dim=0)[:len(buf_str)]
                 self._fine_tune(buf_str, all_fld)
-                # Re-encode through the updated flow
+                # Re-encode current best through the updated flow
                 z, n = self._encode(best_string)
-                z_target, n_target = self._encode(target_pde)
-                z, z_target = z.to(device), z_target.to(device)
-                n, n_target = n.to(device), n_target.to(device)
+                z, n = z.to(device), n.to(device)
 
-            # ── COMPASS: guided step toward z_target ──────────────
-            #   z_target − z  points toward the target in field-space
-            guided = z_target - z
-            guided_norm_actual = guided.norm()
-            if guided_norm_actual > 1e-8:
-                guided = guided / guided_norm_actual * self.guided_norm
+            # ── fit local linear model ─────────────────────────────
+            X = torch.cat(buf_pop, dim=0)
+            X = X.reshape(X.shape[0], -1)
+            y = torch.cat(buf_dL, dim=0)
+            tau = 10
+            weights = torch.softmax(-y.squeeze() / tau, dim=0)
+            # z_hat = torch.linalg.lstsq(E, y).solution.reshape_as(z)
 
-            # ── local linear-model refinement (same as SGD_token) ──
-            local_step = torch.zeros_like(z)
-            if len(buf_eps) >= 2:
-                E = torch.cat(buf_eps, dim=0)
-                y = torch.cat(buf_dL, dim=0)
-                B = E.shape[0]
-                E_flat = E.reshape(B, -1)
+            print('Y', weights)
 
-                K = E_flat @ E_flat.T
-                reg = self.ridge_lambda * torch.eye(B, device=device)
-                alpha = torch.linalg.solve(K + reg, y)
-                W = (E_flat.T @ alpha).reshape_as(z)
-                local_step = -W
+            tok_hat = (weights @ X).reshape_as(tok_p)
 
             # ── step ──────────────────────────────────────────────
-            with torch.no_grad():
-                z = z + self.lr * guided + self.lr_local * local_step
+            opt.zero_grad()
+            loss = F.mse_loss(tok_p, tok_hat)
+            loss.backward()
+            opt.step()
+
+            # tok_p = tok_p + self.lr * (tok_hat - tok_p)
 
             # ── track centre ──────────────────────────────────────
             with torch.no_grad():
-                s_centre, _ = self._decode(z, n)
+                s_centre = self.tok.token_embed.reverse(tok_p.detach())
                 f_centre = self._eval_fields(s_centre)
                 cur_loss = F.mse_loss(_flatten(f_centre), target_flat).item()
 

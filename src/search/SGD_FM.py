@@ -11,7 +11,8 @@ def _flatten(x):
     return x.reshape(x.shape[0], -1)
 
 
-class SGD_token(nn.Module):
+
+class SGD_FM(nn.Module):
     """Online local-linear search with fine-tuned flow manifold.
 
     Core idea: the tokenizer's alignment loss  MSE(D(z), D(v))  is what
@@ -32,12 +33,12 @@ class SGD_token(nn.Module):
         self,
         tokenizer,
         evaluator=None,
-        steps=100,
+        steps=10,
         pop_size=64,
-        noise_std=8.0,
-        lr=0.2,
-        log_every=20,
-        buffer_size=64,
+        noise_std=0.5,
+        lr=1e-1,
+        log_every=1,
+        buffer_size=128,
         train_every=1,
         train_steps=20,
         train_batch=8,
@@ -60,6 +61,8 @@ class SGD_token(nn.Module):
         self.fine_opt = torch.optim.Adam(self.tok.parameters(), lr=train_lr)
 
         self._fixed_q = None
+
+        self.kcrit = nn.KLDivLoss(reduction='batchmean', log_target=True)
 
     # ── helpers ─────────────────────────────────────────────────────
 
@@ -90,6 +93,13 @@ class SGD_token(nn.Module):
             strings = self.tok.token_embed.reverse(tok_cont.detach())
         return strings, tok_cont
 
+    def _round_trip(self, x: torch.Tensor) -> tuple[torch.Tensor, list[str]]:
+        """Projects continuous embeddings back onto the discrete codebook manifold."""
+        with torch.no_grad():
+            strings = self.tok.token_embed.reverse(x.detach())
+            x_rounded = self.tok.token_embed(strings).to(x.device)
+        return x_rounded, strings
+
     def _fine_tune(self, strings, fields):
         """Fine-tune the tokenizer so D(z) ≈ D(v) for collected pairs."""
         self.tok.train()
@@ -115,7 +125,11 @@ class SGD_token(nn.Module):
             z2, _ = self.tok.forward(tok3)
             commit = mse(tok2, tok3) + mse(z, z2)
 
-            loss = align + 0.1 * commit
+            n_logits = F.log_softmax(self.tok.noise(n).view(B, -1), dim=1)
+            loss_dist = self.kcrit(F.log_softmax(n.view(B, -1), dim=1), n_logits) \
+                        + self.kcrit(F.log_softmax(z.view(B, -1), dim=1), n_logits)   
+
+            loss = align + 0.1 * commit + 0.1 * loss_dist
             self.fine_opt.zero_grad()
             loss.backward()
             self.fine_opt.step()
@@ -124,99 +138,63 @@ class SGD_token(nn.Module):
 
     # ── main entry point ────────────────────────────────────────────
 
-    def search(self, init_pde, target_pde=None):
-        """Run online fine-tuned search in the flow's latent space."""
+    def search(self, init_pde: str, target_pde: str | None = None):
+        """Predict-x1 Flow Matching search with round-trip manifold projection."""
         device = next(self.tok.parameters()).device
 
         self._fix_state()
         target = self._target_field(target_pde)
         target_flat = target.reshape(1, -1)
 
-        z, n = self._encode(init_pde)
-        z, n = z.to(device), n.to(device)
-
-        # Replay buffer for fine-tuning
-        buf_str: list[str] = []
-        buf_fld: list[torch.Tensor] = []
-
-        # Replay buffer for the linear model (perturbations)
-        buf_eps: list[torch.Tensor] = []
-        buf_dL: list[torch.Tensor] = []
-
         best_loss = float("inf")
         best_string = init_pde
 
-        for step in tqdm(range(self.steps), desc="SGD_token search"):
-            # ── sample & evaluate ──────────────────────────────────
-            eps = torch.randn(self.pop_size, *z.shape[1:], device=device)
-            z_pop = z + self.noise_std * eps
+        # Initialize current state on the valid embedding manifold
+        tok_p = self.tok.token_embed([init_pde]).to(device).detach()
 
-            n_pop = n.expand_as(z_pop).clone()
-            strings, _ = self._decode(z_pop, n_pop)
+        # Flow matching hyperparameters
+        tau = 0.05       # Temperature for softmax weighting
 
+        for step in tqdm(range(self.steps), desc="Flow Matching Search"):
+            # 1. Sample continuous perturbations around current state
+            eps = torch.randn(self.pop_size, *tok_p.shape[1:], device=device)
+            x_cand = tok_p + self.noise_std * eps
+
+            # 2. Predict-x1 Round Trip: Snap continuous samples back to syntax manifold
+            x1_rounded, strings = self._round_trip(x_cand.reshape(-1, *tok_p.shape[1:]))
             print('\n'.join(strings))
 
+            # 3. Evaluate PDE fields on snap-projected strings
             fields = self._eval_fields(strings)
             pde_losses = F.mse_loss(
                 _flatten(fields),
                 target_flat.expand(self.pop_size, -1),
                 reduction="none",
             ).mean(dim=1)
-            log_losses = torch.log(pde_losses.clamp(min=1e-10))
-            dL = log_losses #- log_losses.mean()
 
-            # ── accumulate replay buffer ───────────────────────────
-            buf_str.extend(strings)
-            buf_fld.append(fields.detach().cpu())
-            if len(buf_str) > self.buffer_size:
-                n_remove = len(buf_str) - self.buffer_size
-                del buf_str[:n_remove]
-                # buf_fld stores one tensor per step; remove whole steps
-                n_step = len(buf_fld[0]) if buf_fld else 0
-                n_step_remove = (n_remove + n_step - 1) // max(n_step, 1)
-                del buf_fld[:n_step_remove]
+            # Track global best
+            min_idx = torch.argmin(pde_losses).item()
+            if pde_losses[min_idx].item() < best_loss:
+                best_loss = pde_losses[min_idx].item()
+                best_string = strings[min_idx]
 
-            buf_eps.append(eps.detach().cpu())
-            buf_dL.append(dL.detach().cpu())
-            if len(buf_eps) > 3:          # keep only 3 most recent steps
-                buf_eps.pop(0)
-                buf_dL.pop(0)
+            # 4. Form velocity target (x1_hat) via soft-min weighting of valid manifold states
+            weights = torch.softmax(-pde_losses / tau, dim=0)
+            x1_target = (weights.view(-1, 1, 1) * x1_rounded).sum(dim=0, keepdim=True)
 
-            # ── online fine-tune the flow ──────────────────────────
-            do_ft = step > 0 and step % self.train_every == 0 and len(buf_str) >= self.train_batch
-            if do_ft:
-                all_fld = torch.cat(buf_fld, dim=0)[:len(buf_str)]
-                self._fine_tune(buf_str, all_fld)
-                # Re-encode current best through the updated flow
-                z, n = self._encode(best_string)
-                z, n = z.to(device), n.to(device)
+            # 5. Euler Step along predicted velocity field: v = (x1_target - tok_p)
+            velocity = x1_target - tok_p
+            tok_p = tok_p + self.lr * velocity
 
-            # ── fit local linear model ─────────────────────────────
-            E = torch.cat(buf_eps, dim=0)
-            E = E.reshape(E.shape[0], -1)
-            y = torch.cat(buf_dL, dim=0)
-            z_hat = torch.linalg.lstsq(E, y).solution.reshape_as(z)
-            
-
-            # ── step ──────────────────────────────────────────────
-            with torch.no_grad():
-                z = z - self.lr * (z_hat - z)
-
-            # ── track centre ──────────────────────────────────────
-            with torch.no_grad():
-                s_centre, _ = self._decode(z, n)
+            # 6. Logging & Centre Check
+            if self.log_every and step % self.log_every == 0:
+                tok_p_snap, s_centre = self._round_trip(tok_p)
                 f_centre = self._eval_fields(s_centre)
                 cur_loss = F.mse_loss(_flatten(f_centre), target_flat).item()
 
-            if cur_loss < best_loss:
-                best_loss = float(cur_loss)
-                best_string = s_centre[0]
-
-            if self.log_every and step % self.log_every == 0:
                 tqdm.write(
-                    f"step {step:4d}  |  loss {cur_loss:.4e}  "
-                    f"|  best {best_loss:.4e}  "
-                    f"|  buf {len(buf_str)}  |  ft {'Y' if do_ft else 'n'}"
+                    f"step {step:4d}  |  center_loss {cur_loss:.4e}  "
+                    f"|  best {best_loss:.4e}"
                 )
                 tqdm.write(f"  best: {best_string[:100]}")
 
