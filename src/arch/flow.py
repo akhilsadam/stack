@@ -10,13 +10,13 @@ class NF:
     @staticmethod
     def map_fwd(a, b, f_b2a, f_a2b, steps):
         for _ in range(steps):
-            b = f_a2b(a) + b
-            a = f_b2a(b) + a
+            b = f_a2b(a)/steps + b
+            a = f_b2a(b)/steps + a
         return a, b
         
     @staticmethod
     def map_bwd(a, b, f_b2a, f_a2b, steps):
         for _ in range(steps):
-            a = a - f_b2a(b)
-            b = b - f_a2b(a)
+            a = a - f_b2a(b)/steps
+            b = b - f_a2b(a)/steps
         return a, b    

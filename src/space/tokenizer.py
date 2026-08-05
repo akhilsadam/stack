@@ -75,7 +75,7 @@ class Tokenizer(nn.Module):
         # self.dh_buffer = Buffer(buf_len*batch)
 
 
-        self._train()
+        # self._train()
 
     def noise(self, z):
         z = torch.randn_like(z)
@@ -88,11 +88,15 @@ class Tokenizer(nn.Module):
         z = torch.randn((size, self.seq_len, self.dim), device=device)
         return z / dim(z)
         
-    def forward(self, tok):
-        return NF._fwd(tok, tok, self.f_z, self.f_n, self.steps)
+    def forward(self, tok, steps=None):
+        if steps is None:
+            steps = self.steps
+        return NF._fwd(tok, tok, self.f_z, self.f_n, steps)
 
-    def reverse(self, z, n):
-        return NF._rev(z, n, self.f_z, self.f_n, self.steps)
+    def reverse(self, z, n, steps=None):
+        if steps is None:
+            steps = self.steps
+        return NF._rev(z, n, self.f_z, self.f_n, steps)
 
     def embed(self, strings):
         tok = self.token_embed(strings)
@@ -170,58 +174,48 @@ class Tokenizer(nn.Module):
 
         # Compute semantic distances
         v = value_flat[valid_mask]
-
-        # Now apply flow and get latent distances
-        z, n = self.forward(token[valid_mask])
-
-        # check reversibility into commit loss:
-        n2 = self.noise(z)
-        tok2 = self.reverse(z, n2)
-        tok3 = self.token_embed(self.token_embed.reverse(tok2)) # breaks graph 
-        z2, _ = self.forward(tok3)
-        loss_commit = F.mse_loss(tok2, tok3) + F.mse_loss(z, z2)
-
-
-
-        # # unquantized "samples" VQ loss, on complete random tokens -- prevents collapse of dist
-        # tok = self.token_embed.generate(self.v_noise())
-        # token = self.token_embed(self.token_embed.reverse(tok))
-        # loss_commit = F.mse_loss(tok, token.detach())
-
-
         d = metric(v)
+
+        # a single coupling step (training single-step, testing multi-step)
+        tok_v = token[valid_mask]
+        z, n = self.forward(tok_v) #, steps=1)
+        # print(z.requires_grad)
+
+        # Standard alignment loss # better than drift-based loss for some reason
         d_hat = metric(z)
-
-        # # Mask out diagonal where targets are -inf (log(0))        
-        # # Compute KLDivLoss only on the off-diagonal elements
-        # mask = ~torch.eye(n_valid, dtype=torch.bool, device=d.device)
-        # loss_align = F.kl_div(d_hat[mask], d[mask], reduction='sum', log_target=True) / n_valid
-
-        # if strings:
-        #     from matplotlib import pyplot as plt
-        #     plt.figure(figsize=(10,10))
-        #     plt.imshow(d.cpu().numpy() , cmap='inferno')
-        #     plt.colorbar()
-        #     # label by string
-        #     xticklabels = strings
-        #     plt.xticks(np.arange(len(xticklabels)), xticklabels, rotation=90)
-        #     plt.yticks(np.arange(len(xticklabels)), xticklabels)
-
-        #     plt.savefig(f'dist_.png')
-        #     plt.close()
-            
-        # mask = mask & (d < 1e-5)
-
-        # loss_align = 10 * torch.sqrt(d + 1e-8).mean() # self.crit(d_hat, d) +
-        # mask = ~torch.eye(d.shape[0], dtype=torch.bool, device=d.device)
         loss_align = self.crit(d_hat, d)
 
-        # print("D_hat sample:", d_hat[mask][:5])
-        # print("D target sample:", d[mask][:5])
-        # print("Are they identical?:", torch.allclose(d_hat[mask], d[mask]))
+        # # Drifting oracle: V(z) = alignment-improvement direction (non-differentiable)
+        # d_hat = metric(z)
+        # align_d = self.crit(d_hat, d)
+        # (grad_z,) = torch.autograd.grad(align_d, z)
 
-        n_logits = F.log_softmax(self.noise(n).view(n_valid,-1), dim=1)
-        loss_dist = self.kcrit(F.log_softmax(n.view(n_valid,-1), dim=1), n_logits) + self.kcrit(F.log_softmax(z.view(n_valid,-1), dim=1), n_logits)
+        # # print(torch.max(grad_z))
+
+        # # # Normalize per-sample gradient as the oracle direction
+        # # g_flat = grad_z.view(n_valid, -1)
+        # # g_norm = g_flat.norm(dim=-1, keepdim=True)
+        # # V_flat = torch.where(
+        # #     g_norm > 1e-8, -g_flat / g_norm.clamp(min=1e-8),
+        # #     torch.zeros_like(g_flat)
+        # # )
+        # # V_z = V_flat.view_as(z) * 0.1  # oracle step clipped to 0.1
+        # V_z = - grad_z #
+
+        # # Drift loss: coupling velocity = z - tok_v should match oracle V(z)
+        # #   z ≈ stopgrad(z + V_z)  ← fixed-point condition
+        # loss_align = F.mse_loss(z, (z + V_z).detach())
+
+        # # check one-step reversibility (commit loss):
+        n2 = self.noise(z)
+        tok2 = self.reverse(z, n2, steps=1)
+        tok3 = self.token_embed(self.token_embed.reverse(tok2)) # breaks graph 
+        z2, _ = self.forward(tok3, steps=1)
+        loss_commit = F.mse_loss(tok2, tok3) + F.mse_loss(z, z2)
+
+        n_logits = F.log_softmax(self.noise(n).view(n_valid, -1), dim=1)
+        loss_dist = self.kcrit(F.log_softmax(n.view(n_valid, -1), dim=1), n_logits) \
+                    + self.kcrit(F.log_softmax(z.view(n_valid, -1), dim=1), n_logits)
 
         return loss_align, loss_commit, loss_dist
 
@@ -255,10 +249,10 @@ class Tokenizer(nn.Module):
                 total_loss.backward()
                 self.opt.step()
 
-                with torch.no_grad():
-                    strings = self.vis.snapshot(i, self.embed)
-                    val_align_loss, val_commit_loss, _ = self.loss(strings)
-                    wandb.log({'val_align_loss': val_align_loss.item(), 'val_commit_loss': val_commit_loss.item()})
+                # with torch.no_grad():
+                strings = self.vis.snapshot(i, self.embed)
+                val_align_loss, val_commit_loss, _ = self.loss(strings)
+                wandb.log({'val_align_loss': val_align_loss.item(), 'val_commit_loss': val_commit_loss.item()})
 
                 # Debug gradient norm
                 if self.debug and i % 100 == 0:

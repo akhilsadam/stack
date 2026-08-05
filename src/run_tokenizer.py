@@ -1,7 +1,7 @@
 import os
 import torch
 import yaml
-from tokenizer import Tokenizer
+from space.tokenizer import Tokenizer
 from vis import SpaceVis as _vis
 
 from apps.qg_basic._eval import build_vocab, QGEvaluator
@@ -35,6 +35,8 @@ def main():
         vis=_vis(cluster_path),
         **config,
     )
+
+    tokenizer._train()
 
     print("Training finished successfully.")
 

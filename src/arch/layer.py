@@ -194,11 +194,12 @@ class FastAttentionBlockCoPEv2(nn.Module):
     Uses PyTorch's native scaled dot-product attention (FlashAttention backends 
     where available) for high throughput.
     """
-    def __init__(self, seq_len=None, dim=512, num_heads=8, tok_dim=32, channel_hidden=None):
+    def __init__(self, seq_len=None, dim=512, num_heads=8, tok_dim=32, channel_hidden=None, causal=True):
         super().__init__()
         # seq_len is kept in signature so it can act as a drop-in replacement,
         # but attention natively handles variable sequence lengths!
         channel_hidden = channel_hidden or 4 * dim
+        self.causal = causal
         
         self.norm1 = nn.LayerNorm(dim)
         # batch_first=True accepts and outputs (B, L, D) tensors
@@ -218,17 +219,19 @@ class FastAttentionBlockCoPEv2(nn.Module):
         self.stack_gate = nn.Sequential(
             nn.Linear(dim, channel_hidden),
             nn.SiLU(),
+            nn.Linear(channel_hidden, channel_hidden),
+            nn.SiLU(),
             nn.Linear(channel_hidden, 1),
         )
 
         attn_mask = nn.Transformer.generate_square_subsequent_mask(
-            seq_len
+            seq_len, dtype=torch.float32
         )
         self.register_buffer('attn_mask', attn_mask, persistent=False)
 
         self.rope = CoPE(tok_dim//2, tok_dim//2, base=seq_len**2)
 
-        self.register_buffer('pos_seq', torch.arange(seq_len), persistent=False)  # [0, 1, ..., L-1]
+        self.register_buffer('pos_seq', torch.arange(seq_len).float(), persistent=False)  # [0, 1, ..., L-1]
 
     def forward(self, x):  # (B, L, D) -> (B, L, D)
         # --- Multi-Head Self-Attention (Token Mixing) ---
@@ -238,21 +241,27 @@ class FastAttentionBlockCoPEv2(nn.Module):
         attn_mask = self.attn_mask[:L,:L]
 
         # Pass both to the dual-axis RoPE
-        pos_seq = self.pos_seq[None, :L].expand(x.shape[0], -1)
+        if self.causal:
+            pos_seq = self.pos_seq[None, :L].expand(x.shape[0], -1)
 
-        stack_gate = self.stack_gate(norm_x).squeeze(-1)  # (B, L) 
-        stack = torch.cumsum(stack_gate, dim=-1) # (B, L)
-        
-        # --- Multi-Head Self-Attention (Token Mixing) ---
-        q_rope = self.rope(norm_x, pos_seq=pos_seq, pos_ctx=stack)
-        k_rope = self.rope(norm_x, pos_seq=pos_seq, pos_ctx=stack)
-        attn_out, _ = self.attn(q_rope, k_rope, norm_x, attn_mask=attn_mask, need_weights=False, is_causal=True)
+            stack_gate = self.stack_gate(norm_x).squeeze(-1)  # (B, L) 
+            stack = torch.cumsum(stack_gate, dim=-1).float() # (B, L)
+            
+            # --- Multi-Head Self-Attention (Token Mixing) ---
+            q_rope = self.rope(norm_x, pos_seq=pos_seq, pos_ctx=stack)
+            k_rope = self.rope(norm_x, pos_seq=pos_seq, pos_ctx=stack)
+        else:
+            q_rope = norm_x
+            k_rope = norm_x
+
+        attn_out, _ = self.attn(q_rope, k_rope, norm_x, attn_mask=attn_mask, need_weights=False, is_causal=self.causal)
         x = x + attn_out
 
         # --- Channel MLP (Channel Mixing) ---
         x = x + self.channel_mlp(self.norm2(x))
 
         return x
+
 
 class MLP(nn.Module):
     """MLP-Mixer style sequence-to-sequence processor.
@@ -286,6 +295,12 @@ class MLP(nn.Module):
                 FastAttentionBlockCoPEv2(seq_len=seq_len, dim=dim, num_heads=num_heads, tok_dim=tok_dim, channel_hidden=channel_hidden)
             ])
 
+        # blocks.extend(
+        #     [
+        #         FastAttentionBlockCoPEv2(seq_len=seq_len, dim=dim, num_heads=num_heads, tok_dim=tok_dim, channel_hidden=channel_hidden, causal=False),
+        #     ] * (depth - 2)
+        # )
+
         if out_dim is not None:
             blocks.append(
                 nn.Linear(dim, out_dim)
@@ -293,7 +308,9 @@ class MLP(nn.Module):
         
         self.blocks = nn.Sequential(*blocks)
 
+    # @torch.compile/
     def forward(self, x, pos=None):  # (B, seq_len, dim) -> (B, seq_len, dim)
         # x = self.rope(x, pos)
         y = self.blocks(x)
+
         return y
