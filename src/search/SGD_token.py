@@ -35,14 +35,13 @@ class SGD_token(nn.Module):
         steps=100,
         pop_size=64,
         noise_std=8.0,
-        lr=0.3,
+        lr=1.0,
         log_every=20,
-        ridge_lambda=0.1,
         buffer_size=64,
-        train_every=5,
+        train_every=1,
         train_steps=20,
-        train_batch=32,
-        train_lr=1e-4,
+        train_batch=8,
+        train_lr=3e-4,
     ):
         super().__init__()
         self.tok = tokenizer
@@ -52,7 +51,6 @@ class SGD_token(nn.Module):
         self.noise_std = noise_std
         self.lr = lr
         self.log_every = log_every
-        self.ridge_lambda = ridge_lambda
         self.buffer_size = buffer_size
         self.train_every = train_every
         self.train_steps = train_steps
@@ -155,7 +153,7 @@ class SGD_token(nn.Module):
 
             n_pop = n.expand_as(z_pop).clone()
             strings, _ = self._decode(z_pop, n_pop)
-            
+
             print('\n'.join(strings))
 
             fields = self._eval_fields(strings)
@@ -165,7 +163,7 @@ class SGD_token(nn.Module):
                 reduction="none",
             ).mean(dim=1)
             log_losses = torch.log(pde_losses.clamp(min=1e-10))
-            dL = log_losses - log_losses.mean()
+            dL = log_losses #- log_losses.mean()
 
             # ── accumulate replay buffer ───────────────────────────
             buf_str.extend(strings)
@@ -195,18 +193,14 @@ class SGD_token(nn.Module):
 
             # ── fit local linear model ─────────────────────────────
             E = torch.cat(buf_eps, dim=0)
+            E = E.reshape(E.shape[0], -1)
             y = torch.cat(buf_dL, dim=0)
-            B = E.shape[0]
-            E_flat = E.reshape(B, -1)
-
-            K = E_flat @ E_flat.T
-            reg = self.ridge_lambda * torch.eye(B, device=device)
-            alpha = torch.linalg.solve(K + reg, y)
-            W = (E_flat.T @ alpha).reshape_as(z)
+            z_hat = torch.linalg.lstsq(E, y).solution.reshape_as(z)
+            
 
             # ── step ──────────────────────────────────────────────
             with torch.no_grad():
-                z = z - self.lr * W
+                z = z - self.lr * (z_hat - z)
 
             # ── track centre ──────────────────────────────────────
             with torch.no_grad():

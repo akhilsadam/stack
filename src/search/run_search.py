@@ -85,25 +85,38 @@ def main():
     #     log_every=search_cfg.get("log_every", 20),
     # )
 
-    # sgd = SGD_token(
+    sgd = SGD_token(
+        tokenizer,
+        evaluator=evaluator,
+        steps=search_cfg.get("steps", 200),
+        pop_size=search_cfg.get("pop_size", 64),
+        noise_std=search_cfg.get("noise_std", 0.5),
+        # train_every=1,
+        # train_steps=5,
+    )
+
+    # sgd = SGD_guided(
+    #     tokenizer,
+    #     evaluator=evaluator,
+    #     steps=search_cfg.get("steps", 60),
+    #     pop_size=search_cfg.get("pop_size", 64),
+    #     noise_std=search_cfg.get("noise_std", 0.2),
+    #     lr=search_cfg.get("lr", 0.5),
+    #     lr_local=search_cfg.get("lr_local", 0.1),
+    #     log_every=search_cfg.get("log_every", 20),
+    # )
+
+
+    # sgd = SGD_guided(
     #     tokenizer,
     #     evaluator=evaluator,
     #     steps=search_cfg.get("steps", 200),
     #     pop_size=search_cfg.get("pop_size", 64),
-    #     noise_std=search_cfg.get("noise_std", 8.0),
+    #     noise_std=search_cfg.get("noise_std", 0.2),
+    #     lr=search_cfg.get("lr", 0.5),
+    #     lr_local=search_cfg.get("lr_local", 0.001),
+    #     log_every=search_cfg.get("log_every", 20),
     # )
-
-
-    sgd = SGD_guided(
-        tokenizer,
-        evaluator=evaluator,
-        steps=search_cfg.get("steps", 60),
-        pop_size=search_cfg.get("pop_size", 64),
-        noise_std=search_cfg.get("noise_std", 0.2),
-        lr=search_cfg.get("lr", 0.5),
-        lr_local=search_cfg.get("lr_local", 0.1),
-        log_every=search_cfg.get("log_every", 20),
-    )
 
     print(f"\n{'='*60}")
     print(f"Target PDE:  {target_rpn}")
