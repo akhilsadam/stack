@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 
-class SGD(nn.Module):
+class Search(nn.Module):
     """Stochastic gradient descent in latent space via straight-through commit.
 
     A latent vector ``z`` (a continuous token embedding) is optimised so that

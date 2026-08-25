@@ -10,9 +10,12 @@ from arch.dist import D as metric
 def _flatten(x):
     return x.reshape(x.shape[0], -1)
 
+# based on flow matching with velocity
+# global version v0
+# depth version v0
 
 
-class SGD_FM(nn.Module):
+class Search(nn.Module):
     """Online local-linear search with fine-tuned flow manifold.
 
     Core idea: the tokenizer's alignment loss  MSE(D(z), D(v))  is what
@@ -33,16 +36,17 @@ class SGD_FM(nn.Module):
         self,
         tokenizer,
         evaluator=None,
-        steps=10,
+        steps=200,
         pop_size=64,
         noise_std=0.5,
-        lr=1e-1,
-        log_every=1,
-        buffer_size=128,
+        lr=1e-2,
+        log_every=10,
+        buffer_size=512,
         train_every=1,
         train_steps=20,
         train_batch=8,
         train_lr=3e-4,
+        tau = 0.1       # Temperature for softmax weighting
     ):
         super().__init__()
         self.tok = tokenizer
@@ -56,6 +60,7 @@ class SGD_FM(nn.Module):
         self.train_every = train_every
         self.train_steps = train_steps
         self.train_batch = train_batch
+        self.tau = tau
 
         # Optimiser for online fine-tuning (separate from search)
         self.fine_opt = torch.optim.Adam(self.tok.parameters(), lr=train_lr)
@@ -138,6 +143,15 @@ class SGD_FM(nn.Module):
 
     # ── main entry point ────────────────────────────────────────────
 
+    def _eval(self, strings, target_flat):
+        fields = self._eval_fields(strings)
+        pde_losses = F.mse_loss(
+            _flatten(fields),
+            target_flat.expand(len(strings), -1),
+            reduction="none",
+        ).mean(dim=1)
+        return pde_losses
+
     def search(self, init_pde: str, target_pde: str | None = None):
         """Predict-x1 Flow Matching search with round-trip manifold projection."""
         device = next(self.tok.parameters()).device
@@ -148,12 +162,12 @@ class SGD_FM(nn.Module):
 
         best_loss = float("inf")
         best_string = init_pde
+        search_count = 0
 
         # Initialize current state on the valid embedding manifold
         tok_p = self.tok.token_embed([init_pde]).to(device).detach()
 
-        # Flow matching hyperparameters
-        tau = 0.05       # Temperature for softmax weighting
+        self.buffer = {} # string -> loss
 
         for step in tqdm(range(self.steps), desc="Flow Matching Search"):
             # 1. Sample continuous perturbations around current state
@@ -164,13 +178,19 @@ class SGD_FM(nn.Module):
             x1_rounded, strings = self._round_trip(x_cand.reshape(-1, *tok_p.shape[1:]))
             print('\n'.join(strings))
 
-            # 3. Evaluate PDE fields on snap-projected strings
-            fields = self._eval_fields(strings)
-            pde_losses = F.mse_loss(
-                _flatten(fields),
-                target_flat.expand(self.pop_size, -1),
-                reduction="none",
-            ).mean(dim=1)
+            # 3. Evaluate PDE fields on snap-projected strings if not in buffer & add to buffer
+            new_strings = []
+            for s in strings:
+                if s.strip() not in self.buffer:
+                    new_strings.append(s.strip())
+
+            if (n := len(new_strings)) > 0:
+                search_count += n
+                losses = self._eval(new_strings, target_flat)
+                for s, loss in zip(new_strings, losses):
+                    self.buffer[s] = loss
+            
+            pde_losses = torch.tensor([self.buffer[s] for s in strings], device=device)
 
             # Track global best
             min_idx = torch.argmin(pde_losses).item()
@@ -179,7 +199,7 @@ class SGD_FM(nn.Module):
                 best_string = strings[min_idx]
 
             # 4. Form velocity target (x1_hat) via soft-min weighting of valid manifold states
-            weights = torch.softmax(-pde_losses / tau, dim=0)
+            weights = torch.softmax(-pde_losses / self.tau, dim=0)
             x1_target = (weights.view(-1, 1, 1) * x1_rounded).sum(dim=0, keepdim=True)
 
             # 5. Euler Step along predicted velocity field: v = (x1_target - tok_p)
@@ -198,4 +218,9 @@ class SGD_FM(nn.Module):
                 )
                 tqdm.write(f"  best: {best_string[:100]}")
 
+                if cur_loss < 1e-5:
+                    break
+                
+                print("search_count", search_count)
+                print(len(self.buffer))
         return best_string, best_loss

@@ -12,11 +12,18 @@ _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PKG not in sys.path:
     sys.path.insert(0, _PKG)
 
-from search.SGD_FM import SGD_FM
-from search.SGD_token import SGD_token
-from search.SGD import SGD
+# from search.SGD_RWR import Search
+# from search.SGD_RWRv2 import Search
+# from search.SGD_GMvD import Search
+# from search.SGD_LGM import Search
 
 from space.tokenizer import Tokenizer
+from search.SGD_token import Search
+
+# from space.tokenizer import BasicTokenizer as Tokenizer
+# from search.SGD import Search
+
+
 from vis import SpaceVis as _vis
 from apps.qg_basic._eval import build_vocab, QGEvaluator
 
@@ -85,7 +92,7 @@ def main():
     #     log_every=search_cfg.get("log_every", 20),
     # )
 
-    sgd = SGD_FM(
+    sgd = Search(
         tokenizer,
         evaluator=evaluator,
     )

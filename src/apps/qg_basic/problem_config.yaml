@@ -1,5 +1,17 @@
-PDE: q psi jacobian neg q lap 0.01 x * * + 
+base_PDE: q psi jacobian neg
+PDE: q lap x * 0.01 *
 PDE_init: q 
-eval_steps: 1
-# PDE: q psi jacobian neg q lap 0.01 x * * +
-# 
+eval_steps: 4
+
+## max seq len 12
+# PDE: q psi jacobian neg q lap 0.01 x * * + 
+# PDE_init: q 
+# finds q neg q invlap jacobian
+
+# PDE: q psi jacobian neg 0.01 * q lap x * + 
+# PDE_init: q 
+# finds q lap x *
+
+# PDE: q psi jacobian neg 0.9 * q lap x * + 
+# PDE_init: q 
+# finds q lap x *

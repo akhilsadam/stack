@@ -38,6 +38,35 @@ class Buffer(nn.Module):
 
         return torch.cat([self.queue[-self.Q:-N], new], dim=0)
 
+class BasicTokenizer(nn.Module):
+    def __init__(self, vocab, _eval, batch, seq_len, dim, phys_dim, depth, steps=5, lr=1e-3, _iter=4000,
+                 vis=None, **kwargs):
+        super().__init__()
+        self.vocab = vocab
+        self.token_embed = TE(vocab, seq_len, dim, phys_dim)
+        self._eval = _eval
+
+        self.steps = steps
+        self.seq_len = seq_len
+        self.dim = dim
+        self.batch = batch
+        self._iter = _iter
+
+        tok_dim = dim - phys_dim
+        
+        self.max_condition_num = 1000
+        self.k = 5
+        self.debug = True
+
+        self.vis = vis
+
+    def value(self, tok):
+        strings = self.token_embed.reverse(tok)
+        result = self._eval(strings)
+        # Replace NaN/inf with 0
+        return torch.nan_to_num(result, nan=1000000.0, posinf=1000000.0, neginf=-1000000.0)
+
+
 class Tokenizer(nn.Module):
     def __init__(self, vocab, _eval, batch, seq_len, dim, phys_dim, depth, steps=5, lr=1e-3, _iter=4000,
                  vis=None, **kwargs):

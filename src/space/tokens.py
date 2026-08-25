@@ -161,9 +161,11 @@ class TokenEmbedding(nn.Module):
 
     def fwd_phys(self, x):
         return torch.tanh(x).repeat_interleave(self.phys_dim, dim=-1)
+        # return x.repeat_interleave(self.phys_dim, dim=-1)
 
     def rev_phys(self, x):
-        return torch.atanh(torch.clamp(x, -1 + 1e-4, 1 - 1e-4).mean(dim=-1))
+        return torch.atanh(torch.clamp(x, -1 + 1e-4, 1 - 1e-4)).mean(dim=-1)
+        # return x[...,0]
 
     def to(self, device):
         self.device = device

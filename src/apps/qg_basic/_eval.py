@@ -203,9 +203,12 @@ class QGEvaluator:
         self.batch = batch
         self.steps = kwargs.get('eval_steps', 1)
 
+        self.base_pde = kwargs.get('base_PDE', '0.0')
         self.target_pde = kwargs.get('PDE', None)
         if self.target_pde is None:
             raise ValueError('PDE not found')
+
+        # self.target_pde = self.base_pde + ' ' + self.target_pde + ' +'
 
         self.param = OmegaConf.create(
             {
@@ -278,7 +281,6 @@ class QGEvaluator:
         return _state(
             qh=self.derivative.dealias(to_spectral(self.q_phys)),
             dt=self.param.time.dt,
-            flow=lambda s: None,
             derivative=self.derivative,
         )
         
@@ -310,6 +312,7 @@ class QGEvaluator:
         #     return torch.zeros((self.batch, self.grid.Ny, self.grid.Nx), device=self.state.qh.device)
 
     def eval_one(self, rpn: str) -> torch.Tensor:
+        # rpn = self.base_pde + ' ' + rpn + ' +' # add base pde
         state = self.construct_state()
         try:
             compiled = self.compiler.compile(rpn)
