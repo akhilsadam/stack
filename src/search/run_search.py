@@ -13,14 +13,17 @@ if _PKG not in sys.path:
     sys.path.insert(0, _PKG)
 
 # from search.SGD_RWR import Search
-# from search.SGD_RWRv2 import Search
+from search.SGD_RWRv2 import Search
 # from search.SGD_GMvD import Search
 # from search.SGD_LGM import Search
 
-from space.tokenizer import Tokenizer
-from search.SGD_token import Search
+# from space.tokenizer import Tokenizer
+# from search.SGD_token import Search
 
-# from space.tokenizer import BasicTokenizer as Tokenizer
+from space.tokenizer import BasicTokenizer as Tokenizer
+# from search.SGD_LRWR import Search
+# from search.SGD_LRWRv5 import Search
+# from search.SGD_RWR import Search
 # from search.SGD import Search
 
 

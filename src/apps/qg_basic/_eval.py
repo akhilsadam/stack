@@ -275,6 +275,9 @@ class QGEvaluator:
 
     def random_state(self):
         self.q_phys = 4 * torch.rand(self.batch, self.grid.Ny, self.grid.Nx) - 2
+        # run QG for a bit
+        self.q_phys = self.solver.nn_step(self.q_phys, n_steps=50)[:,0]
+
         self.norm = torch.linalg.norm(self.q_phys[0])
     
     def construct_state(self):
@@ -359,6 +362,6 @@ class QGEvaluator:
         return rpn_to_latex(rpn)
 
     def __call__(self, strings: List[str]) -> torch.Tensor:
-        self.random_state()
+        # self.random_state()
         return torch.stack([self.eval_one(s) for s in strings], dim=0)
 

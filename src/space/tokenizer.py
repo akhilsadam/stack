@@ -53,6 +53,7 @@ class BasicTokenizer(nn.Module):
         self._iter = _iter
 
         tok_dim = dim - phys_dim
+        self.tok_dim = tok_dim
         
         self.max_condition_num = 1000
         self.k = 5
@@ -82,6 +83,7 @@ class Tokenizer(nn.Module):
         self._iter = _iter
 
         tok_dim = dim - phys_dim
+        self.tok_dim = tok_dim
 
         self.f_z = MLP(seq_len, dim, tok_dim, depth)
         self.f_n = MLP(seq_len, dim, tok_dim, depth)
