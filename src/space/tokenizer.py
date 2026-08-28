@@ -308,7 +308,7 @@ class Operator(nn.Module):
         has_nan = torch.stack([torch.isnan(t).any() for t in items])
         logits = logits.masked_fill(has_nan, float('-inf'))
 
-        next_item = torch.sum(F.softmax(logits / (F.relu(temp) + 0.01), dim=0) * out, dim=-1)
+        next_item = torch.sum(F.softmax(logits / (F.relu(temp) + 0.1), dim=0) * out, dim=-1)
 
         return [*stack, next_item]
 

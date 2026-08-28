@@ -19,7 +19,7 @@ def build_vocab(**_kwargs) -> Vocab:
     ]
 
     tokens = [Token(name, arity, func) for name, arity, func in token_specs]
-    return Vocab(tokens=tokens)
+    return Vocab(tokens=tokens, **_kwargs)
 
 class Evaluator():
     def __init__(self, device='cpu', **_kwargs):
