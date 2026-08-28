@@ -1,329 +1,362 @@
+import math
+import random
+from enum import IntEnum, auto
+from typing import Dict, List, Optional, Sequence, Tuple, Union, Callable
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm
-import numpy as np
-import os
 
-from arch.flow import NF
-from arch.layer import MLP
-# from arch.dist import SNE as metric
-# from arch.dist import log_odds_SNE as metric
 
-from arch.dist import D as metric
-from space.tokens import TokenEmbedding as TE
+# from .arity import get_tree_coords
 
-import wandb
+# TODO extend to multidimensionality / matrix / vector / tensor equations
+## needs to add physical dimension to token
+## needs a PhysicalTensor class to extract tensor constants
+## needs to handle tensor contractions and maybe Einstein summation notation...
+## quite difficult for now as solver doesn't support either yet
 
-def dim(z):
-    return np.prod(z.shape[1:])
+# TokenSchema
+# Generalized scalar evaluation lookups
+# UNARY_MATH_OPS = {
+#     "sin": math.sin,
+#     "cos": math.cos,
+#     "sqrt": lambda x: math.sqrt(x) if x >= 0 else float("nan"),
+#     "square": lambda x: x**2,
+#     "cube": lambda x: x**3,
+#     "neg": lambda x: -x,
+#     "exp": math.exp,
+#     "log": lambda x: math.log(x) if x > 0 else float("nan"),
+# }
 
-class Buffer(nn.Module):
-    def __init__(self, batch):
+# BINARY_MATH_OPS = {
+#     "+": lambda a, b: a + b,
+#     "-": lambda a, b: a - b,
+#     "*": lambda a, b: a * b,
+#     "/": lambda a, b: a / b if b != 0 else float("nan"),
+# }
+
+# def _is_zero(val: Optional[float]) -> bool:
+#     return val is not None and math.isclose(val, 0.0, abs_tol=1e-6)
+
+
+# def _is_one(val: Optional[float]) -> bool:
+#     return val is not None and math.isclose(val, 1.0, abs_tol=1e-6)
+
+
+# @dataclass
+# class Rule:
+#     """User-defined rewrite rule using RPN pattern matching.
+
+#     Capitalized tokens (e.g., 'A', 'X') act as wildcard variables matching any subtree.
+#     """
+
+#     pattern: str  # e.g., "psi lap" or "A invlap lap"
+#     replacement: str  # e.g., "q" or "A"
+
+
+
+# class Node:
+#     """Atomic syntax tree element."""
+
+#     def __init__(
+#         self, name: str, arity: int, value: Optional[float] = None
+#     ):
+#         self.name = name
+#         self.arity = arity
+#         self.value = value
+#         self.children: List["Node"] = []
+
+#     def clone(self) -> "Node":
+#         new_node = Node(self.name, self.arity, self.value)
+#         new_node.children = [c.clone() for c in self.children]
+#         return new_node
+
+#     @property
+#     def is_scalar(self) -> bool:
+#         return self.value is not None
+
+
+# class Tree:
+#     """Tree container for traversal, evaluation, pattern matching, and rule application."""
+
+#     def __init__(self, root: Node):
+#         self.root = root
+
+#     def to_rpn(self) -> List[str]:
+#         return self._to_rpn_node(self.root)
+
+#     def _to_rpn_node(self, node: Node) -> List[str]:
+#         rpn = []
+#         for child in node.children:
+#             rpn.extend(self._to_rpn_node(child))
+#         rpn.append(
+#             f"{node.value:.4g}" if node.value is not None else node.name
+#         )
+#         return rpn
+
+#     @classmethod
+#     def from_rpn(cls, tokens: List[str], vocab: "Vocab") -> Optional["Tree"]:
+#         stack: List[Node] = []
+#         for tok in tokens:
+#             if not tok or tok in ("<unk>", "<pad>"):
+#                 continue
+
+#             # Wildcard tokens (e.g., 'A', 'X') during pattern parsing
+#             if tok[0].isupper():
+#                 stack.append(Node(tok, arity=0))
+#                 continue
+
+#             rep = vocab.rep_from_str(tok)
+#             if rep._id == vocab.scalar_token_id:
+#                 node = Node("<scalar>", 0, value=rep._mag)
+#             else:
+#                 arity = vocab.id_to_arity.get(rep._id, 0)
+#                 node = Node(vocab.id_to_token[rep._id], arity)
+
+#             if node.arity == 0:
+#                 stack.append(node)
+#             elif node.arity == 1:
+#                 if len(stack) < 1:
+#                     return None
+#                 node.children = [stack.pop()]
+#                 stack.append(node)
+#             elif node.arity == 2:
+#                 if len(stack) < 2:
+#                     return None
+#                 right = stack.pop()
+#                 left = stack.pop()
+#                 node.children = [left, right]
+#                 stack.append(node)
+
+#         return cls(stack[0]) if len(stack) == 1 else None
+
+#     def simplify(self, vocab: "Vocab") -> "Tree":
+#         self.root = self._simplify_node(self.root, vocab)
+#         return self
+
+#     def _simplify_node(self, node: Node, vocab: "Vocab") -> Node:
+#         # Bottom-up recursion across children
+#         node.children = [
+#             self._simplify_node(c, vocab) for c in node.children
+#         ]
+
+#         # 1. User Rewrite Rules
+#         for pat_tree, repl_tree in vocab.compiled_rules:
+#             bindings: Dict[str, Node] = {}
+#             if self._match(node, pat_tree.root, bindings):
+#                 rewritten = self._instantiate(repl_tree.root, bindings)
+#                 return self._simplify_node(rewritten, vocab)
+
+#         # 2. Generalized Constant Folding & Unary/Binary Math Evaluation
+#         if vocab.fold_constants:
+#             # Unary evaluations (sin, cos, sqrt, square, cube, neg, exp, log)
+#             if node.arity == 1 and len(node.children) == 1:
+#                 child = node.children[0]
+#                 if child.is_scalar and node.name in UNARY_MATH_OPS:
+#                     try:
+#                         res = UNARY_MATH_OPS[node.name](child.value)
+#                         if not math.isnan(res) and not math.isinf(res):
+#                             return Node("<scalar>", 0, value=res)
+#                     except (ValueError, OverflowError, ZeroDivisionError):
+#                         pass
+
+#             # Binary evaluations (+, -, *, /)
+#             elif node.arity == 2 and len(node.children) == 2:
+#                 left, right = node.children[0], node.children[1]
+
+#                 if (
+#                     left.is_scalar
+#                     and right.is_scalar
+#                     and node.name in BINARY_MATH_OPS
+#                 ):
+#                     try:
+#                         res = BINARY_MATH_OPS[node.name](
+#                             left.value, right.value
+#                         )
+#                         if not math.isnan(res) and not math.isinf(res):
+#                             return Node("<scalar>", 0, value=res)
+#                     except (ValueError, OverflowError, ZeroDivisionError):
+#                         pass
+
+#                 # Associative Constant Merging: c1 * (c2 * X) -> (c1 * c2) * X
+#                 if node.name == "*":
+#                     if (
+#                         left.is_scalar
+#                         and right.name == "*"
+#                         and len(right.children) == 2
+#                     ):
+#                         if right.children[0].is_scalar:
+#                             merged = left.value * right.children[0].value
+#                             new_node = Node("*", 2)
+#                             new_node.children = [
+#                                 Node("<scalar>", 0, value=merged),
+#                                 right.children[1],
+#                             ]
+#                             return self._simplify_node(new_node, vocab)
+#                         elif right.children[1].is_scalar:
+#                             merged = left.value * right.children[1].value
+#                             new_node = Node("*", 2)
+#                             new_node.children = [
+#                                 Node("<scalar>", 0, value=merged),
+#                                 right.children[0],
+#                             ]
+#                             return self._simplify_node(new_node, vocab)
+
+#                 # Tolerance-based Identity Reductions
+#                 if node.name == "*":
+#                     if _is_one(right.value):
+#                         return left
+#                     if _is_one(left.value):
+#                         return right
+#                     if _is_zero(right.value) or _is_zero(left.value):
+#                         return Node("<scalar>", 0, value=0.0)
+#                 elif node.name == "+":
+#                     if _is_zero(right.value):
+#                         return left
+#                     if _is_zero(left.value):
+#                         return right
+#                 elif node.name == "-":
+#                     if _is_zero(right.value):
+#                         return left
+
+#         return node
+
+#     def _match(
+#         self, node: Node, pattern: Node, bindings: Dict[str, Node]
+#     ) -> bool:
+#         if pattern.name[0].isupper():
+#             if pattern.name in bindings:
+#                 return self._to_rpn_node(node) == self._to_rpn_node(
+#                     bindings[pattern.name]
+#                 )
+#             bindings[pattern.name] = node
+#             return True
+
+#         if node.name != pattern.name or len(node.children) != len(
+#             pattern.children
+#         ):
+#             return False
+
+#         return all(
+#             self._match(c, pc, bindings)
+#             for c, pc in zip(node.children, pattern.children)
+#         )
+
+#     def _instantiate(
+#         self, template: Node, bindings: Dict[str, Node]
+#     ) -> Node:
+#         if template.name[0].isupper():
+#             return bindings[template.name].clone()
+
+#         new_node = Node(template.name, template.arity, template.value)
+#         new_node.children = [
+#             self._instantiate(c, bindings) for c in template.children
+#         ]
+#         return new_node
+
+
+class Token(nn.Module):
+    """Token definition (by user)."""
+
+    def __init__(self, token: str, arity: int, op: Callable = None):
         super().__init__()
-        self.batch = batch
-        self.Q = 0
-        self.queue = None
+        self.token = token.strip().lower()
+        self.arity = arity
+        self.op = op
 
-    def __call__(self, new):
-        if self.queue is None:
-            self.batch = max(self.batch, new.shape[0])
-            self.queue = torch.empty((self.batch, *new.shape[1:]), device=new.device)
+class Scalar(Token):
+    def __init__(self, value):
+        super().__init__("<scalar>", 0, None)
 
-        with torch.no_grad():
-            N = new.shape[0]
-            self.queue[:-N] = self.queue.clone()[N:]
-            self.queue[-N:] = new.detach()
-            self.Q = min(self.Q + N, self.batch)
+        self.value = nn.Parameter(torch.tensor(value))
+        self.op = self.forward
+    
+    def forward(self, stack):
+        return self.value
 
-        return torch.cat([self.queue[-self.Q:-N], new], dim=0)
+class Operator(nn.Module):
+    def __init__(self, token_id, token_init, tokens: List[Token]):
+        super().__init__()
+        self.ops = [token.op for token in tokens]
+        self.ops[token_id] = token_init.op
 
-class BasicTokenizer(nn.Module):
-    def __init__(self, vocab, _eval, batch, seq_len, dim, phys_dim, depth, steps=5, lr=1e-3, _iter=4000,
-                 vis=None, **kwargs):
+        self.weights = nn.Parameter(0.01 * torch.rand(len(tokens)))
+        self.weights.data[token_id] = 1.0
+        
+    def forward(self, stack, temp=1.0):
+        out = torch.stack([op(stack) for op in self.ops], dim=-1)
+        next_item = torch.sum(F.softmax(self.weights / temp, dim=0) * out, dim=-1)
+
+        return [*stack, next_item]
+
+class Vocab:
+
+    def __init__(
+        self,
+        tokens: List[Token],
+        seq_len: int
+    ):
+        self.tokens = [Token("<unk>", 1, lambda stack: 0.0), Token("<scalar>", 0, None), *tokens]
+        self.token_to_id = {
+            token.token: i for i, token in enumerate(self.tokens)
+        }
+        self.id_to_token = {
+            i: token.token for i, token in enumerate(self.tokens)
+        }
+        self.id_to_arity = {
+            i: token.arity for i, token in enumerate(self.tokens)
+        }
+
+        self.pad_token_id = self.token_to_id["<unk>"]
+        self.scalar_token_id = self.token_to_id["<scalar>"]
+
+    def __len__(self):
+        return len(self.tokens)
+
+    def rep_from_str(self, token_str: str) -> int:
+        try: 
+            val = float(token_str)
+            return self.scalar_token_id, val
+        except:
+            _id = self.token_to_id.get(token_str.strip().lower(), self.pad_token_id)
+            return _id, self.tokens[_id]
+
+    def tokenize_str(self, _str: str):
+        ops = []
+        for i, s in enumerate(_str.split(" ")):
+            _id, t = self.rep_from_str(s)
+            ops.append(Operator(_id, t, self.tokens))
+        if len(ops) < self.seq_len:
+            _id = self.pad_token_id
+            ops.extend([Operator(_id, self.tokens[_id], self.tokens) for _ in range(self.seq_len - len(ops))])
+        return ops
+
+class Stack(nn.Module):
+    def __init__(self, init_str: str, vocab: Vocab, **kwargs):
         super().__init__()
         self.vocab = vocab
-        self.token_embed = TE(vocab, seq_len, dim, phys_dim)
-        self._eval = _eval
 
-        self.steps = steps
-        self.seq_len = seq_len
-        self.dim = dim
-        self.batch = batch
-        self._iter = _iter
-
-        tok_dim = dim - phys_dim
-        self.tok_dim = tok_dim
-        
-        self.max_condition_num = 1000
-        self.k = 5
-        self.debug = True
-
-        self.vis = vis
-
-    def value(self, tok):
-        strings = self.token_embed.reverse(tok)
-        result = self._eval(strings)
-        # Replace NaN/inf with 0
-        return torch.nan_to_num(result, nan=1000000.0, posinf=1000000.0, neginf=-1000000.0)
-
-
-class Tokenizer(nn.Module):
-    def __init__(self, vocab, _eval, batch, seq_len, dim, phys_dim, depth, steps=5, lr=1e-3, _iter=4000,
-                 vis=None, **kwargs):
-        super().__init__()
-        self.vocab = vocab
-        self.token_embed = TE(vocab, seq_len, dim, phys_dim)
-        self._eval = _eval
-
-        self.steps = steps
-        self.seq_len = seq_len
-        self.dim = dim
-        self.batch = batch
-        self._iter = _iter
-
-        tok_dim = dim - phys_dim
-        self.tok_dim = tok_dim
-
-        self.f_z = MLP(seq_len, dim, tok_dim, depth)
-        self.f_n = MLP(seq_len, dim, tok_dim, depth)
-
-        self.kcrit = nn.KLDivLoss(reduction='batchmean', log_target=True)
-        self.crit = nn.MSELoss()
-        # self.crit = nn.KLDivLoss(reduction='batchmean', log_target=True)
-
-        # Train BOTH the embedding and the flow
-        self.opt = torch.optim.Adam(self.parameters(), lr=float(lr))
-
-        self.max_condition_num = 1000
-        self.k = 5
-        self.debug = True
-
-        self.vis = vis
-
-        # buf_len = 1
-        # self.d_buffer = Buffer(buf_len*batch)
-        # self.dh_buffer = Buffer(buf_len*batch)
-
-
-        # self._train()
-
-    def noise(self, z):
-        z = torch.randn_like(z)
-        return z / dim(z)
-
-    def v_noise(self, size=None):
-        device = next(self.parameters()).device
-        if size is None:
-            size = self.batch
-        z = torch.randn((size, self.seq_len, self.dim), device=device)
-        return z / dim(z)
-        
-    def forward(self, tok, steps=None):
-        if steps is None:
-            steps = self.steps
-        return NF._fwd(tok, tok, self.f_z, self.f_n, steps)
-
-    def reverse(self, z, n, steps=None):
-        if steps is None:
-            steps = self.steps
-        return NF._rev(z, n, self.f_z, self.f_n, steps)
-
-    def embed(self, strings):
-        tok = self.token_embed(strings)
-        return NF._fwd(tok, tok, self.f_z, self.f_n, self.steps)[0]
-
-    def value(self, tok):
-        strings = self.token_embed.reverse(tok)
-        result = self._eval(strings)
-        # Replace NaN/inf with 0
-        return torch.nan_to_num(result, nan=1000000.0, posinf=1000000.0, neginf=-1000000.0)
-
-    def loss(self, strings=None):
-
-        # sample_vector = self.v_noise()
-        # tok = self.sample_token_from_vector(sample_vector) # extremely BAD idea, can cause distribution to collapse (flow only learns "safe" distribution)
-        # tok = self.token_embed.generate(self.v_noise()) # not great either, doesn't learn "good/stable" PDEs
-        # TODO: sampling
-        # tok = 0.9 * self.sample_token_from_vector(self.v_noise()) + 0.1 * self.v_noise()
-
-        # toka = self.token_embed.generate(self.v_noise())
-        # tokb = self.sample_token_from_vector(self.v_noise())
-        # r2 = torch.rand(self.batch, device=toka.device)
-
-        # tok = torch.where(r2[:,None,None] < 0.5, toka, tokb)
-
-
-        # noise = self.v_noise()
-        # base = torch.repeat_interleave(noise[0:1], repeats=self.batch, dim=0)
-        # head_len = 3
-        # base[:, :head_len, :] = noise[:, :head_len, :]
-        # tok = self.token_embed.generate(base)
-
-        ###---------------------------------------
-
-        _str = self.token_embed.generate_rpns(self.batch)
-
-        # max_seq_len = tok.shape[1]
-        # r = torch.rand(self.batch, device=tok.device)
-        # # b = 6.0
-        # # y = (r - 0.02)**b + 1 - (0.98)**b  # weighted toward small seqs
-        # random_seq_len = ((r) * max_seq_len).long()
-
-        # Sample from the token space directly (no flow yet)
-        if strings is None:
-            # _str = self.token_embed.reverse(tok, random_seq_len)
-            token = self.token_embed(_str)
-            # print("\\\\ ".join(self._eval.to_latex(s) for s in _str))
-        else:
-            token = self.token_embed(strings)
-            # print("\\\\ ".join(self._eval.to_latex(s) for s in strings))
-
-        # Get semantic evaluations
-        value = self.value(token)
-        value_flat = value.reshape(value.shape[0], -1)
-
-        # Filter valid items - reject ones with huge values (numerical instability)
-        stable_mask = (torch.linalg.norm(value_flat, dim=-1) < self.max_condition_num * self._eval.norm)
-        valid_mask = (
-            stable_mask &
-            torch.all(torch.isfinite(value_flat), dim=-1)
+        self.ops = nn.ModuleList(
+            self.vocab.tokenize_str(init_str)
         )
 
-        # Debug: log unstable RPN expressions
-        if valid_mask.sum() < self.batch:
-            _strings = self.token_embed.reverse(token)
-            for i, (mask, s) in enumerate(zip(valid_mask, _strings)):
-                if not mask:
-                    condition_num  = torch.linalg.norm(value_flat[i]) / self._eval.norm
-                    print(f"UNSTABLE (|cond|={condition_num:.2e}): {s}")
+        self.base_stack = [0.0,] * self.vocab.seq_len # padding
 
-        n_valid = valid_mask.sum()
-        if n_valid < self.k:
-            print("Warning: not enough valid samples")
-            return False
+        self.temp = nn.Parameter(torch.ones(self.vocab.seq_len))
 
-        # Compute semantic distances
-        v = value_flat[valid_mask]
-        d = metric(v)
+    def forward(self, stack_in=None):
+        stack_in = stack_in or self.base_stack
 
-        # a single coupling step (training single-step, testing multi-step)
-        tok_v = token[valid_mask]
-        z, n = self.forward(tok_v) #, steps=1)
-        # print(z.requires_grad)
+        for i, op in enumerate(self.ops):
+            stack_in = op(stack_in, temp = self.temp[i])
 
-        # Standard alignment loss # better than drift-based loss for some reason
-        d_hat = metric(z)
-        loss_align = self.crit(d_hat, d)
+        return stack_in[-1] # last element
 
-        # # Drifting oracle: V(z) = alignment-improvement direction (non-differentiable)
-        # d_hat = metric(z)
-        # align_d = self.crit(d_hat, d)
-        # (grad_z,) = torch.autograd.grad(align_d, z)
-
-        # # print(torch.max(grad_z))
-
-        # # # Normalize per-sample gradient as the oracle direction
-        # # g_flat = grad_z.view(n_valid, -1)
-        # # g_norm = g_flat.norm(dim=-1, keepdim=True)
-        # # V_flat = torch.where(
-        # #     g_norm > 1e-8, -g_flat / g_norm.clamp(min=1e-8),
-        # #     torch.zeros_like(g_flat)
-        # # )
-        # # V_z = V_flat.view_as(z) * 0.1  # oracle step clipped to 0.1
-        # V_z = - grad_z #
-
-        # # Drift loss: coupling velocity = z - tok_v should match oracle V(z)
-        # #   z ≈ stopgrad(z + V_z)  ← fixed-point condition
-        # loss_align = F.mse_loss(z, (z + V_z).detach())
-
-        # # check one-step reversibility (commit loss):
-        n2 = self.noise(z)
-        tok2 = self.reverse(z, n2, steps=1)
-        tok3 = self.token_embed(self.token_embed.reverse(tok2)) # breaks graph 
-        z2, _ = self.forward(tok3, steps=1)
-        loss_commit = F.mse_loss(tok2, tok3) + F.mse_loss(z, z2)
-
-        n_logits = F.log_softmax(self.noise(n).view(n_valid, -1), dim=1)
-        loss_dist = self.kcrit(F.log_softmax(n.view(n_valid, -1), dim=1), n_logits) \
-                    + self.kcrit(F.log_softmax(z.view(n_valid, -1), dim=1), n_logits)
-
-        return loss_align, loss_commit, loss_dist
-
-    def _train(self):
-        run = wandb.init(project='vectorspace', name='qg_tokenizer', config={
-            'vocab_size': len(self.vocab),
-            'seq_len': self.seq_len,
-            'dim': self.dim,
-            'steps': self.steps,
-            'lr': self.opt.param_groups[0]['lr'],
-            'iter': self._iter,
-        }, mode='offline')
-
-        for i in tqdm(range(self._iter)):
-            self.opt.zero_grad()
-            try:
-                result = self.loss()
-                if result is False:
-                    continue
-                align_loss, commit_loss, dist_loss = result
-                
-                wandb.log({'align_loss': align_loss.item(), 'commit_loss': commit_loss.item(), 'dist_loss': dist_loss.item()})
-                total_loss = align_loss + 0.1 * commit_loss + 0.1 * dist_loss
-
-                # strings = self.vis.snapshot(i, self.embed)
-                # val_align_loss, val_commit_loss, _ = self.loss(strings)
-                # wandb.log({'val_align_loss': val_align_loss.item(), 'val_commit_loss': val_commit_loss.item()})
-                # # cheating to debug
-                # total_loss = total_loss + val_align_loss
-
-                total_loss.backward()
-                self.opt.step()
-
-                # with torch.no_grad():
-                strings = self.vis.snapshot(i, self.embed)
-                val_align_loss, val_commit_loss, _ = self.loss(strings)
-                wandb.log({'val_align_loss': val_align_loss.item(), 'val_commit_loss': val_commit_loss.item()})
-
-                # Debug gradient norm
-                if self.debug and i % 100 == 0:
-                    total_grad_norm = 0
-                    for param in self.parameters():
-                        if param.grad is not None:
-                            total_grad_norm += param.grad.data.norm(2).item() ** 2
-                    total_grad_norm = total_grad_norm ** 0.5
-                    print(f"Iter {i}: loss={total_loss.item():.6f}, grad_norm={total_grad_norm:.6e}")
-                    self.vis.plot(i)
-
-                # # Visualization snapshot
-                    # if self.vis_every > 0 and i % self.vis_every == 0:
-                #     with torch.no_grad():
-                #         emb = self.token_embed(self.vis_prompts)
-                #         z, n = self.forward(emb)
-                #         self.snapshots.append({
-                #             'iter': i,
-                #             'rpns': self.vis_prompts,
-                #             'latents': z.cpu().clone()
-                #         })
-                #     if self.vis_plot:
-                #         from vis.atlas import AtlasPlotter
-                #         output_path = os.path.join(self.vis_out, f'atlas_iter_{i:06d}.png')
-                #         AtlasPlotter.plot(self.snapshots, clusters=self.vis_clusters, output=output_path)
-
-            except Exception as e:
-                print(f"Error at iteration {i}: {e}")
-                continue
-
-        # Save final snapshots
-        # if self.vis_every > 0:
-        #     torch.save({'snapshots': self.snapshots}, os.path.join(self.vis_out, 'snapshots.pt'))
-        #     print(f"Saved visualization snapshots to {self.vis_out}/snapshots.pt")
-
-    ## eval
-
-    def token_to_vector(self, tok):
-        return self.forward(tok)[0]
-
-    def sample_token_from_vector(self, z):
-        n = self.noise(z)
-        return self.reverse(z, n)
+    def loss(self, z_hat, z_target, metric):
+        loss_target = metric(z_hat, z_target)
+        loss_temp = (self.temp).pow(2.0).mean()
+        print(loss_target.item(), loss_temp.item(), self.temp.mean().item())
+        return loss_target, loss_temp
+        

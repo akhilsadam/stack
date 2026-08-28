@@ -3,16 +3,10 @@ from dataclasses import dataclass
 import traceback
 import torch
 
-from qg.solver.grid.cartesian import CartesianGrid
-from qg.solver.opt.derivative import Derivative
-from qg.solver.opt.basis import _state, to_physical, to_spectral
-from qg.solver.opt.operator.rpn import RPNCompiler
-from qg.solver.opt.operator import ImplicitLinearOperator, define_explicit_operator
-from qg.solver.integrator import Integrator
 from omegaconf import OmegaConf
 import logging
 
-from space.tokens import Token, Rule, Vocab
+from space.tokens import Token, Vocab
 
 
 @dataclass
@@ -207,7 +201,7 @@ class _NoParams:
 
 
 # TODO define base class for this
-class Evaluator:
+class QGEvaluator:
     """Callable ``_eval`` backed by the ``qg`` spectral solver.
 
     Compiles each RPN string and evaluates it on a fixed QG state, returning a
