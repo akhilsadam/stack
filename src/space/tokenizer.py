@@ -260,45 +260,73 @@ import torch.nn.functional as F
 class Token(nn.Module):
     """Token definition (by user)."""
 
-    def __init__(self, token: str, arity: int, op: Callable = None):
+    def __init__(self, token: str, arity: int, op: Callable = lambda stack, **kwargs: torch.tensor(0.0)):
         super().__init__()
         self.token = token.strip().lower()
         self.arity = arity
         self.op = op
+        self.value = None
+
+    def forward(self, stack, **kwargs):
+        return self.op(stack, **kwargs)
 
 class Scalar(Token):
     def __init__(self, value):
         super().__init__("<scalar>", 0, None)
 
         self.value = nn.Parameter(torch.tensor(value))
-        self.op = self.forward
     
-    def forward(self, stack):
-        return self.value
+    def forward(self, stack, **kwargs):
+        return torch.clamp(self.value, min=-10.0, max=10.0)
+
+class UNK(Token):
+    def __init__(self):
+        super().__init__("<unk>", 1, None)
+
+    def forward(self, stack, **kwargs):
+        return stack[-1]
 
 class Operator(nn.Module):
     def __init__(self, token_id, token_init, tokens: List[Token]):
         super().__init__()
-        self.ops = [token.op for token in tokens]
-        self.ops[token_id] = token_init.op
+        self.ops = tokens
+        self.ops[token_id] = token_init
 
         self.weights = nn.Parameter(0.01 * torch.rand(len(tokens)))
         self.weights.data[token_id] = 1.0
         
-    def forward(self, stack, temp=1.0):
-        out = torch.stack([op(stack) for op in self.ops], dim=-1)
-        next_item = torch.sum(F.softmax(self.weights / temp, dim=0) * out, dim=-1)
+    def forward(self, stack, temp=1.0, **kwargs):
+        items = [op(stack, **kwargs) for op in self.ops]
+
+        # broadcast to largest shape
+        target_shape = torch.broadcast_shapes(*[t.shape for t in items])
+        items = [t.broadcast_to(target_shape) for t in items]
+
+        out = torch.stack(items, dim=-1)
+
+        logits = torch.clamp(self.weights, min=-10.0, max=10.0)
+        has_nan = torch.stack([torch.isnan(t).any() for t in items])
+        logits = logits.masked_fill(has_nan, float('-inf'))
+
+        next_item = torch.sum(F.softmax(logits / (F.relu(temp) + 0.01), dim=0) * out, dim=-1)
 
         return [*stack, next_item]
+
+    def get_token(self):
+        _id = torch.argmax(self.weights).item()
+        _value = self.ops[_id].value
+        return _id, _value
 
 class Vocab:
 
     def __init__(
         self,
         tokens: List[Token],
-        seq_len: int
+        seq_len: int = 64,
+        **kwargs,
     ):
-        self.tokens = [Token("<unk>", 1, lambda stack: 0.0), Token("<scalar>", 0, None), *tokens]
+        self.seq_len = seq_len
+        self.tokens = [UNK(), Scalar(0.0), *tokens]
         self.token_to_id = {
             token.token: i for i, token in enumerate(self.tokens)
         }
@@ -318,7 +346,7 @@ class Vocab:
     def rep_from_str(self, token_str: str) -> int:
         try: 
             val = float(token_str)
-            return self.scalar_token_id, val
+            return self.scalar_token_id, Scalar(val)
         except:
             _id = self.token_to_id.get(token_str.strip().lower(), self.pad_token_id)
             return _id, self.tokens[_id]
@@ -330,7 +358,7 @@ class Vocab:
             ops.append(Operator(_id, t, self.tokens))
         if len(ops) < self.seq_len:
             _id = self.pad_token_id
-            ops.extend([Operator(_id, self.tokens[_id], self.tokens) for _ in range(self.seq_len - len(ops))])
+            ops.extend([Operator(_id, UNK(), self.tokens) for _ in range(self.seq_len - len(ops))])
         return ops
 
 class Stack(nn.Module):
@@ -342,21 +370,56 @@ class Stack(nn.Module):
             self.vocab.tokenize_str(init_str)
         )
 
-        self.base_stack = [0.0,] * self.vocab.seq_len # padding
+        self.base_stack = [torch.tensor(0.0),] * self.vocab.seq_len # padding
 
         self.temp = nn.Parameter(torch.ones(self.vocab.seq_len))
 
-    def forward(self, stack_in=None):
+        self.output_logits = nn.Parameter(torch.zeros(self.vocab.seq_len))
+        self.output_logits.data[-1] = 1.0
+        self.output_temp = 0.1
+
+    def forward(self, stack_in=None, **kwargs):
         stack_in = stack_in or self.base_stack
 
         for i, op in enumerate(self.ops):
-            stack_in = op(stack_in, temp = self.temp[i])
+            stack_in = op(stack_in, temp = self.temp[i], **kwargs)
 
-        return stack_in[-1] # last element
+        elems = torch.stack(stack_in[-self.vocab.seq_len:], dim=-1)
+        attn_weights = F.softmax(self.output_logits / self.output_temp, dim=0)
+        out = torch.sum(elems * attn_weights, dim=-1) # provides gradient
+        return out
+        
+        # return stack_in[-1] # last element
 
     def loss(self, z_hat, z_target, metric):
         loss_target = metric(z_hat, z_target)
         loss_temp = (self.temp).pow(2.0).mean()
         print(loss_target.item(), loss_temp.item(), self.temp.mean().item())
         return loss_target, loss_temp
+
+    @torch.no_grad()
+    def detokenize(self):
+        tokens = []
+        for i, op in enumerate(self.ops):
+            token_id, value = op.get_token()
+            if token_id == self.vocab.scalar_token_id:
+                tokens.append(f"{value.item():.4f}")
+            else:
+                tokens.append(self.vocab.id_to_token[token_id])
+        return " ".join(tokens)
+            
+    
+    def _train(self, _eval):
+        opt = torch.optim.Adam(self.parameters(), lr=1e-1)
+        for i in range(1000):
+            opt.zero_grad()
+            z_hat = _eval(self.forward)
+            loss_target, loss_temp = self.loss(z_hat, _eval.target, _eval.metric)
+            loss = loss_target #+ 0.01 * loss_temp
+            print(loss_target.item(), loss_temp.item(), self.temp.mean().item())
+            loss.backward()
+            opt.step()
+            if i % 100 == 0:
+                print(i, self.detokenize())
+            
         

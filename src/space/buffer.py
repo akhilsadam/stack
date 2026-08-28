@@ -5,13 +5,13 @@ from tqdm import tqdm
 import numpy as np
 import os
 
-from arch.flow import NF
-from arch.layer import MLP
-# from arch.dist import SNE as metric
-# from arch.dist import log_odds_SNE as metric
+# from arch.flow import NF
+# from arch.layer import MLP
+# # from arch.dist import SNE as metric
+# # from arch.dist import log_odds_SNE as metric
 
-from arch.dist import D as metric
-from space.tokens import TokenEmbedding as TE
+# from arch.dist import D as metric
+# from space.tokens import TokenEmbedding as TE
 
 import wandb
 
