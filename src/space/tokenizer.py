@@ -294,6 +294,8 @@ class Operator(nn.Module):
 
         self.weights = nn.Parameter(0.01 * torch.rand(len(tokens)))
         self.weights.data[token_id] = 1.0
+
+        self.hardness = 0.0
         
     def forward(self, stack, temp=1.0, **kwargs):
         items = [op(stack, **kwargs) for op in self.ops]
@@ -308,7 +310,11 @@ class Operator(nn.Module):
         has_nan = torch.stack([torch.isnan(t).any() for t in items])
         logits = logits.masked_fill(has_nan, float('-inf'))
 
-        next_item = torch.sum(F.softmax(logits / (F.relu(temp) + 0.1), dim=0) * out, dim=-1)
+        soft_item = torch.sum(F.softmax(logits / (F.relu(temp) + 0.1), dim=0) * out, dim=-1)
+        hard_item = items[torch.argmax(logits, dim=0)]
+
+        # STE
+        next_item = soft_item + self.hardness * (hard_item - soft_item).detach()
 
         return [*stack, next_item]
 
@@ -386,7 +392,7 @@ class Stack(nn.Module):
 
         elems = torch.stack(stack_in[-self.vocab.seq_len:], dim=-1)
         attn_weights = F.softmax(self.output_logits / self.output_temp, dim=0)
-        out = torch.sum(elems * attn_weights, dim=-1) # provides gradient
+        out = torch.sum(elems * attn_weights, dim=-1) # provides gradient, bypass constants that gradient block
         return out
         
         # return stack_in[-1] # last element
@@ -406,7 +412,7 @@ class Stack(nn.Module):
                 tokens.append(f"{value.item():.4f}")
             else:
                 tokens.append(self.vocab.id_to_token[token_id])
-        return " ".join(tokens)
+        return " ".join(tokens).replace('<unk>', '').strip()
             
     
     def _train(self, _eval):
