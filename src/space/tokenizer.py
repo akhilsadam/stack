@@ -10,9 +10,10 @@ import torch.nn.functional as F
 
 import logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
 )
+logging.getLogger('PIL').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -267,52 +268,61 @@ logger = logging.getLogger(__name__)
 
 class Token(nn.Module):
     """Token definition (by user)."""
+    token = "<base>"
+    arity = 1
 
-    def __init__(self, token: str, arity: int, op: Callable = lambda stack, **kwargs: torch.tensor(0.0)):
+    def __init__(self):
         super().__init__()
-        self.token = token.strip().lower()
-        self.arity = arity
-        self.op = op
 
     def forward(self, stack, **kwargs):
-        return self.op(stack, **kwargs)
+        raise NotImplementedError()
     
     def value(self):
         return None
 
-class Scalar(Token):
-    def __init__(self, value):
-        super().__init__("<scalar>", 0, None)
+def make_static_token(name, _arity, func):
+    class StaticToken(Token):
+        token = name.strip().lower()
+        arity = _arity
+        def __init__(self):
+            super().__init__()
+            self.forward = func
+    return StaticToken
 
-        init = torch.atanh(torch.clamp(torch.tensor(value) / 10.0, -0.999, 0.999))
+class Scalar(Token):
+    token = "<scalar>"
+    arity = 0
+    def __init__(self, value=1.0):
+        super().__init__()
+
+        init = torch.atanh(torch.clamp(torch.tensor(value) / 10.0, -0.999, 0.999)) * 10
         self.raw = nn.Parameter(init)
     
     def forward(self, stack, **kwargs):
-        return 10.0 * torch.tanh(self.raw)
+        return torch.tanh(self.raw / 10.0) * 10.0
 
     def value(self):
         return self.forward(stack=None).detach()
 
 class UNK(Token):
-    def __init__(self):
-        super().__init__("<unk>", 1, None)
-
+    token = "<unk>"
+    arity = 1
     def forward(self, stack, **kwargs):
         return stack[-1]
 
 class Operator(nn.Module):
     def __init__(self, token_id, token_init, gate, tokens: List[Token]):
         super().__init__()
-        self.ops = list(tokens)
 
+        ops = [tok() for tok in tokens] # default initialization
 
         self.weights = nn.Parameter(0.1 * torch.rand(len(tokens)))
         
         if token_id >= 0: 
             self.weights.data[token_id] = 1.0
-            self.ops[token_id] = token_init
+            ops[token_id] = token_init
 
-        self.ops = nn.ModuleList(self.ops)
+        self.ops = nn.ModuleList(ops)
         # self.weights.data = F.softmax(self.weights.data, dim=0)
 
         self.gate = nn.Parameter(torch.tensor(gate))
@@ -391,7 +401,7 @@ class Vocab:
         **kwargs,
     ):
         self.seq_len = seq_len
-        self.tokens = [UNK(), Scalar(0.0), *tokens]
+        self.tokens = [UNK, Scalar, *tokens]
         self.token_to_id = {
             token.token: i for i, token in enumerate(self.tokens)
         }
@@ -415,7 +425,7 @@ class Vocab:
             return self.scalar_token_id, Scalar(val)
         except:
             _id = self.token_to_id.get(token_str.strip().lower(), self.pad_token_id)
-            return _id, self.tokens[_id]
+            return _id, self.tokens[_id]()
 
     def tokenize_str(self, _str: str):
         ops = []
@@ -425,11 +435,11 @@ class Vocab:
             ops.append(self._Operator(_id, t, 1.0, self.tokens))
         if len(toks) < self.seq_len:
             _id = self.pad_token_id
-            ops.extend([self._Operator(_id, self.tokens[_id], 1.0, self.tokens) for _ in range(self.seq_len - len(toks))])
+            ops.extend([self._Operator(_id, self.tokens[_id](), 1.0, self.tokens) for _ in range(self.seq_len - len(toks))])
         return ops
 
 class Stack(nn.Module):
-    def __init__(self, init_str: str, vocab: Vocab, **kwargs):
+    def __init__(self, init_str: str, vocab: Vocab, T0=20, **kwargs):
         super().__init__()
         self.vocab = vocab
 
@@ -440,7 +450,8 @@ class Stack(nn.Module):
         self.base_stack = [torch.tensor(1.0),] * self.vocab.seq_len # padding
         self.max_depth = kwargs.get("max_depth", 12)
 
-        self.temp = nn.Parameter(20 * torch.ones(self.vocab.seq_len))
+        self.T0 = T0
+        self.temp = nn.Parameter(T0 * torch.ones(self.vocab.seq_len))
         self.gate_temp = nn.Parameter(torch.tensor(1.0))
 
         self.output_logits = nn.Parameter(torch.zeros(min(self.vocab.seq_len, self.max_depth)))
@@ -453,10 +464,10 @@ class Stack(nn.Module):
         stack_in = stack_in or self.base_stack
 
         if not _eval:
-            temp = F.relu(self.temp) + 0.1
+            temp = F.relu(self.temp) + 1e-6
             gate_temp = F.relu(self.gate_temp) + 0.1
         else:
-            temp = 0 * self.temp + 0.1
+            temp = 0 * self.temp + 0.01
             gate_temp = 0 * self.gate_temp + 0.1
             kwargs['hardness'] = 1.0
 
@@ -470,19 +481,12 @@ class Stack(nn.Module):
         
         return stack_in[-1] # last element
 
-    def loss(self, z_hat, z_target, metric):
-        loss_target = metric(z_hat, z_target)
-        loss_temp = (self.temp).pow(2.0).mean()
-        loss_gate = (self.gate_temp).pow(2.0).mean()
-        # print(loss_target.item(), loss_temp.item(), self.gate_temp.item())
-        logger.debug(f"Loss target: {loss_target.item()}, loss temp: {loss_temp.item()}, loss gate: {loss_gate.item()}")
-        return loss_target, loss_temp, loss_gate
-
     @torch.no_grad()
     def detokenize(self, threshold = 0.95):
         tokens = []
         gates = []
         final = []
+        arity = []
 
         gate_temp = F.relu(self.gate_temp) + 0.1
         for i, op in enumerate(self.ops):
@@ -494,6 +498,31 @@ class Stack(nn.Module):
             gates.append(gate)
             if gate < threshold:
                 final.append(tokens[-1])
+                arity.append(self.vocab.id_to_arity[token_id])
+
+        # downselect based on arity
+        # cumsum_a = torch.cumsum(1-torch.tensor(arity), dim=0).flip(dims=[0]) 
+        # rev_k = torch.where(cumsum_a > 1)[0]
+        # print(f'{cumsum_a} rev_k {rev_k}', flush=True)
+
+        # if len(rev_k) == 0:
+        #     final = final[-1:]
+        # else:
+        #     # last few tokens, not necessarily a full stack
+        #     k = rev_k[-1].item()
+        #     final = final[k:]
+
+        # S = torch.cumsum(1 - torch.tensor(arity), dim=0)          # S[i] = depth after token i, starting stack=0
+        # suffix_min = torch.flip(
+        #     torch.cummin(torch.flip(S, dims=[0]), dim=0).values, dims=[0]
+        # )  # suffix_min[j] = min(S[j], S[j+1], ..., S[n-1])
+
+        # # want smallest j with S[j-1] <= suffix_min[j]  (S[-1] := 0)
+        # S_prev = torch.cat([torch.zeros(1), S[:-1]])
+        # valid_start = S_prev <= suffix_min
+        # j = torch.where(valid_start)[0][0].item()   # smallest valid start
+        # final = final[j:]
+
         return '\n'*2 + '\t' +\
          '\n\t'.join([" ".join(tokens), 
                      ' '.join([f'{g:.2f}' for g in gates]), 
@@ -507,15 +536,25 @@ class Stack(nn.Module):
         for i in range(self._iter):
             opt.zero_grad()
             z_hat = _eval(self.forward)
-            loss_target, loss_temp, loss_gate = self.loss(z_hat, _eval.target, _eval.metric)
+
+            # log schedule
+            T_schedule = self.T0 * math.exp(-i/40)
+
+            loss_target = _eval.metric(z_hat, _eval.target)
+            loss_temp = (self.temp - T_schedule).pow(2.0).mean()
+            loss_gate = (self.gate_temp).pow(2.0).mean()
+            # print(loss_target.item(), loss_temp.item(), self.gate_temp.item())
+            logger.debug(f"Loss target: {loss_target.item()}, temp: {self.temp.mean().item()}, loss gate: {loss_gate.item()}")
+
+
             # loss = loss_target + 1e-4 * loss_temp 
             # loss = max(loss_target, loss_temp / 20)
-            a = (loss_temp / 20) < loss_target
-            b = 1 / 20 if a else 1e-4
+            # a = (loss_temp / 20) < loss_target
+            b = 0.05 # if a else  # 
             c = 1e-4
             loss = loss_target + b * loss_temp + c * loss_gate
 
-            if (loss_target > 1e-4 and loss_temp > 1e-6):
+            if (loss_target > 1e-3 and self.temp.mean().item() > 1e-2):
                 # not converged yet; don't optimize gate
                 self.gate_temp.requires_grad_(False)
             else:
