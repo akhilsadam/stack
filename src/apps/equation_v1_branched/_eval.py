@@ -50,6 +50,7 @@ class Evaluator():
         plt.plot(self.x.cpu(), y.cpu(), label="y")
         plt.legend()
         plt.savefig(f"y_hat_{iter}.png")
+        plt.close()
         
     # def metric(self, x_hat, x):
     #     mse = F.mse_loss(x_hat, x)

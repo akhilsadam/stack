@@ -8,6 +8,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger(__name__)
+
+
 
 # from .arity import get_tree_coords
 
@@ -466,7 +474,8 @@ class Stack(nn.Module):
         loss_target = metric(z_hat, z_target)
         loss_temp = (self.temp).pow(2.0).mean()
         loss_gate = (self.gate_temp).pow(2.0).mean()
-        print(loss_target.item(), loss_temp.item(), self.gate_temp.item())
+        # print(loss_target.item(), loss_temp.item(), self.gate_temp.item())
+        logger.debug(f"Loss target: {loss_target.item()}, loss temp: {loss_temp.item()}, loss gate: {loss_gate.item()}")
         return loss_target, loss_temp, loss_gate
 
     @torch.no_grad()
@@ -485,8 +494,8 @@ class Stack(nn.Module):
             gates.append(gate)
             if gate < threshold:
                 final.append(tokens[-1])
-        return '\n'*2 + \
-         '\n'.join([" ".join(tokens), 
+        return '\n'*2 + '\t' +\
+         '\n\t'.join([" ".join(tokens), 
                      ' '.join([f'{g:.2f}' for g in gates]), 
                      " ".join(final).replace('<unk>', '').strip()]) + \
          '\n'*2
@@ -515,7 +524,9 @@ class Stack(nn.Module):
             loss.backward()
             opt.step()
             if i % 100 == 0 or i==self._iter-1:
-                print(i, self.detokenize())
+                # print(i, self.detokenize())
+                losses = f"\nloss_target: {loss_target.item()}, loss_temp: {loss_temp.item()}, loss_gate: {loss_gate.item()}"
+                logger.info(f"\nIteration {i}: {self.detokenize()} {losses}")
                 z_hat_hard = _eval(self.forward, _eval=True)
                 _eval.plot(z_hat_hard.detach(), z_hat.detach(), _eval.target, i)
             
