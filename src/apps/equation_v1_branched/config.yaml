@@ -1,8 +1,9 @@
-# eqn: x 3 * sin x 0.005 * cos +
-init: x 1 *  
+# eqn: x 3 * sin 
+init: <unk>
 seed: 42
 seq_len: 12
-_iter: 2000
+_iter: 4000
+max_depth: 24
 
 ## max seq len 12
 # PDE: q psi jacobian neg q lap 0.01 x * * + 

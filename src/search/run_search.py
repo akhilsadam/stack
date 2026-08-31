@@ -15,11 +15,19 @@ from space.tokenizer import Stack, Operator
 # from MCTS import MCTSStack as Stack, PUCTOperator as Operator
 # from search.SGD import Search
 
-from apps.equation_basic._eval import build_vocab, Evaluator
-_CONFIG      = os.path.join(_PKG, "apps/equation_basic/config.yaml")
+app = "equation_v0_linear"
+# app = "equation_v1_branched"
+# app = "qg_basic"
 
-# from apps.qg_basic._eval import build_vocab, Evaluator
-# _CONFIG      = os.path.join(_PKG, "apps/qg_basic/config.yaml")
+
+import importlib.util
+spec = importlib.util.spec_from_file_location("eval", f"apps/{app}/_eval.py")
+eval = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(eval)
+
+build_vocab = eval.build_vocab
+Evaluator   = eval.Evaluator
+_CONFIG     = os.path.join(_PKG, f"apps/{app}/config.yaml")
 
 
 def main():

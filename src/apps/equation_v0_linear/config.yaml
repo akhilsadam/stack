@@ -1,0 +1,19 @@
+# eqn: x sin sin
+init: <unk>
+seed: 42
+seq_len: 12
+_iter: 4000
+max_depth: 24
+
+## max seq len 12
+# PDE: q psi jacobian neg q lap 0.01 x * * + 
+# PDE_init: q 
+# finds q neg q invlap jacobian
+
+# PDE: q psi jacobian neg 0.01 * q lap x * + 
+# PDE_init: q 
+# finds q lap x *
+
+# PDE: q psi jacobian neg 0.9 * q lap x * + 
+# PDE_init: q 
+# finds q lap x *
