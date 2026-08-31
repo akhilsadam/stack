@@ -11,7 +11,8 @@ _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PKG not in sys.path:
     sys.path.insert(0, _PKG)
 
-from space.tokenizer import Stack
+from space.tokenizer import Stack, Operator
+# from MCTS import MCTSStack as Stack, PUCTOperator as Operator
 # from search.SGD import Search
 
 from apps.equation_basic._eval import build_vocab, Evaluator
@@ -33,7 +34,7 @@ def main():
 
     # ── build components ───────────────────────────────────────────
     print("Building vocabulary and QG evaluator …")
-    vocab = build_vocab(**cfg)
+    vocab = build_vocab(_Operator=Operator, **cfg)
     
     tokenizer = Stack(
         init_str = cfg.get('init'),
