@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from space.tokenizer import Vocab, Token
+from space.tokenizer import Vocab, make_static_token
 
 def build_vocab(**_kwargs) -> Vocab:
     """Vocabulary of QG tokens understood by both the embedder and ``qg``."""
@@ -20,7 +20,7 @@ def build_vocab(**_kwargs) -> Vocab:
         ("neg", 1, lambda stack, **kwargs: -stack[-1]),
     ]
 
-    tokens = [Token(name, arity, func) for name, arity, func in token_specs]
+    tokens = [make_static_token(name, arity, func) for name, arity, func in token_specs]
     return Vocab(tokens=tokens, **_kwargs)
 
 class Evaluator():
@@ -63,4 +63,4 @@ class Evaluator():
     def target(self):
         # return torch.sin(3 * self.x) #+ torch.cos(0.005 * self.x)
         # return 3 * self.x
-        return torch.sin(3 * (self.x))
+        return torch.sin(0.75 * (self.x))

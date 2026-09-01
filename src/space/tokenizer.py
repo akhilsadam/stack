@@ -432,7 +432,7 @@ class Vocab:
         **kwargs,
     ):
         self.seq_len = seq_len
-        self.tokens = [UNK, *tokens]
+        self.tokens = tokens #[UNK, *tokens]
         self.token_to_id = {
             token.token: i for i, token in enumerate(self.tokens)
         }
@@ -443,24 +443,31 @@ class Vocab:
             i: token.arity for i, token in enumerate(self.tokens)
         }
 
-        self.pad_token_id = self.token_to_id["<unk>"]
+        # self.pad_token_id = self.token_to_id["<unk>"]
         self._Operator = _Operator
 
     def __len__(self):
         return len(self.tokens)
 
     def rep_from_str(self, token_str: str) -> int:
-        _id = self.token_to_id.get(token_str.strip().lower(), self.pad_token_id)
-        return _id, self.tokens[_id]()
+        _id = self.token_to_id.get(token_str.strip().lower(), -1)
+        return _id 
 
     def tokenize_str(self, _str: str):
         ops = []
         toks = _str.split(" ")
         for i, s in enumerate(toks):
-            _id, t = self.rep_from_str(s)
-            ops.append(self._Operator(_id, t, 1.0, self.tokens))
+            _id = self.rep_from_str(s)
+            if _id == -1:
+                _id = 0
+                passthrough = 1.0
+            else:
+                passthrough = 1.0 # regardless we use passthrough to start from nothing
+            t = self.tokens[_id]()
+            ops.append(self._Operator(_id, t, passthrough, self.tokens))
+
         if len(toks) < self.seq_len:
-            _id = self.pad_token_id
+            _id = 0 # self.pad_token_id
             ops.extend([self._Operator(_id, self.tokens[_id](), 1.0, self.tokens) for _ in range(self.seq_len - len(toks))])
         return ops
 
@@ -477,7 +484,7 @@ class Stack(nn.Module):
         self.max_depth = kwargs.get("max_depth", 12)
 
         self.T0 = T0
-        self.temp = nn.Parameter(T0 * torch.ones(self.vocab.seq_len))
+        self.temp = nn.Parameter(torch.ones(self.vocab.seq_len))
         self.gate_temp = nn.Parameter(torch.tensor(1.0))
 
         self.output_logits = nn.Parameter(torch.zeros(min(self.vocab.seq_len, self.max_depth)))
@@ -490,11 +497,12 @@ class Stack(nn.Module):
         stack_in = stack_in or self.base_stack
 
         if not _eval:
-            temp = F.relu(self.temp) + 1e-6
+            temp = self.T0 * F.relu(self.temp) + 1e-6
             gate_temp = F.relu(self.gate_temp) + 0.1
         else:
-            temp = 0 * self.temp + 0.01
-            gate_temp = 0 * self.gate_temp + 0.1
+            temp = 0.0 * F.relu(self.temp) + 1e-6
+            # gate_temp = F.relu(self.gate_temp) + 0.1
+            gate_temp = 0.0 * self.gate_temp + 0.1
             kwargs['hardness'] = 1.0
 
         for i, op in enumerate(self.ops):
@@ -561,10 +569,10 @@ class Stack(nn.Module):
             z_hat = _eval(self.forward)
 
             # log schedule
-            T_schedule = self.T0 * math.exp(-i/40)
+            T_schedule = math.exp(-i/200)
 
             loss_target = _eval.metric(z_hat, _eval.target)
-            loss_temp = (self.temp - T_schedule).pow(2.0).mean()
+            loss_temp = F.relu(self.temp - T_schedule).pow(2.0).mean()
             loss_gate = (self.gate_temp).pow(2.0).mean()
             # print(loss_target.item(), loss_temp.item(), self.gate_temp.item())
             logger.debug(f"Loss target: {loss_target.item()}, temp: {self.temp.mean().item()}, loss gate: {loss_gate.item()}")
@@ -573,15 +581,15 @@ class Stack(nn.Module):
             # loss = loss_target + 1e-4 * loss_temp 
             # loss = max(loss_target, loss_temp / 20)
             # a = (loss_temp / 20) < loss_target
-            b = 0.05 # if a else  # 
+            b = 0.0#5 # if a else  # 
             c = 1e-4
             loss = loss_target + b * loss_temp + c * loss_gate
 
-            if (loss_target > 1e-3 and self.temp.mean().item() > 1e-2):
-                # not converged yet; don't optimize gate
-                self.gate_temp.requires_grad_(False)
-            else:
-                self.gate_temp.requires_grad_(True)
+            # if (loss_target > 1e-3 and self.temp.mean().item() > 1e-2):
+            #     # not converged yet; don't optimize gate
+            #     self.gate_temp.requires_grad_(False)
+            # else:
+            #     self.gate_temp.requires_grad_(True)
 
             loss.backward()
             opt.step()
