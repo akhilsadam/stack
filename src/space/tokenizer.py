@@ -14,6 +14,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
 )
 logging.getLogger('PIL').setLevel(logging.WARNING)
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -289,26 +290,52 @@ def make_static_token(name, _arity, func):
             self.forward = func
     return StaticToken
 
+# class Scalar(Token):
+#     token = "<scalar>"
+#     arity = 0
+#     def __init__(self, value=1.0):
+#         super().__init__()
+
+#         init = torch.atanh(torch.clamp(torch.tensor(value) / 10.0, -0.999, 0.999)) * 10
+#         self.raw = nn.Parameter(init)
+    
+#     def forward(self, stack, **kwargs):
+#         return torch.tanh(self.raw / 10.0) * 10.0
+
+#     def value(self):
+#         return self.forward(stack=None).detach()
+
 class Scalar(Token):
     token = "<scalar>"
     arity = 0
     def __init__(self, value=1.0):
         super().__init__()
 
-        init = torch.atanh(torch.clamp(torch.tensor(value) / 10.0, -0.999, 0.999)) * 10
-        self.raw = nn.Parameter(init)
+        self.val = torch.tensor(value)
     
     def forward(self, stack, **kwargs):
-        return torch.tanh(self.raw / 10.0) * 10.0
+        return self.val
 
     def value(self):
-        return self.forward(stack=None).detach()
+        return self.val
 
 class UNK(Token):
     token = "<unk>"
     arity = 1
     def forward(self, stack, **kwargs):
         return stack[-1]
+
+class Affine(nn.Module):
+    def __init__(self, scale=1.0, shift=0.0):
+        super().__init__()
+
+        init = torch.atanh(torch.clamp(torch.tensor(scale) / 10.0, -0.999, 0.999)) * 10
+        self.raw_scale = nn.Parameter(init)
+        init = torch.atanh(torch.clamp(torch.tensor(shift) / 10.0, -0.999, 0.999)) * 10
+        self.raw_shift = nn.Parameter(init)
+    
+    def forward(self, _in):
+        return torch.tanh(self.raw_scale / 10.0) * 10.0 * _in + torch.tanh(self.raw_shift / 10.0) * 10.0
 
 class Operator(nn.Module):
     def __init__(self, token_id, token_init, gate, tokens: List[Token]):
@@ -326,6 +353,7 @@ class Operator(nn.Module):
         # self.weights.data = F.softmax(self.weights.data, dim=0)
 
         self.gate = nn.Parameter(torch.tensor(gate))
+        self.affine = Affine()
         
     def forward(self, stack, temp=1.0, gate_temp=1.0, hardness=0.0, **kwargs):
         items = [op(stack, **kwargs) for op in self.ops]
@@ -380,6 +408,9 @@ class Operator(nn.Module):
         # STE
         next_item = soft_item + hardness * (hard_item - soft_item).detach()
 
+        # affine
+        next_item = self.affine(next_item)
+
         # passthrough gate
         a = torch.sigmoid(self.gate / gate_temp)
         next_item = (1 - a) * next_item + a * stack[-1]
@@ -401,7 +432,7 @@ class Vocab:
         **kwargs,
     ):
         self.seq_len = seq_len
-        self.tokens = [UNK, Scalar, *tokens]
+        self.tokens = [UNK, *tokens]
         self.token_to_id = {
             token.token: i for i, token in enumerate(self.tokens)
         }
@@ -413,19 +444,14 @@ class Vocab:
         }
 
         self.pad_token_id = self.token_to_id["<unk>"]
-        self.scalar_token_id = self.token_to_id["<scalar>"]
         self._Operator = _Operator
 
     def __len__(self):
         return len(self.tokens)
 
     def rep_from_str(self, token_str: str) -> int:
-        try: 
-            val = float(token_str)
-            return self.scalar_token_id, Scalar(val)
-        except:
-            _id = self.token_to_id.get(token_str.strip().lower(), self.pad_token_id)
-            return _id, self.tokens[_id]()
+        _id = self.token_to_id.get(token_str.strip().lower(), self.pad_token_id)
+        return _id, self.tokens[_id]()
 
     def tokenize_str(self, _str: str):
         ops = []
@@ -491,10 +517,7 @@ class Stack(nn.Module):
         gate_temp = F.relu(self.gate_temp) + 0.1
         for i, op in enumerate(self.ops):
             token_id, value, gate = op.get_token(gate_temp)
-            if token_id == self.vocab.scalar_token_id:
-                tokens.append(f"{value.item():.4f}")
-            else:
-                tokens.append(self.vocab.id_to_token[token_id])
+            tokens.append(self.vocab.id_to_token[token_id])
             gates.append(gate)
             if gate < threshold:
                 final.append(tokens[-1])
