@@ -265,7 +265,7 @@ logger = logging.getLogger(__name__)
 #             self._instantiate(c, bindings) for c in template.children
 #         ]
 #         return new_node
-
+eps = 1e-6
 
 class Token(nn.Module):
     """Token definition (by user)."""
@@ -290,40 +290,15 @@ def make_static_token(name, _arity, func):
             self.forward = func
     return StaticToken
 
-# class Scalar(Token):
-#     token = "<scalar>"
-#     arity = 0
-#     def __init__(self, value=1.0):
-#         super().__init__()
-
-#         init = torch.atanh(torch.clamp(torch.tensor(value) / 10.0, -0.999, 0.999)) * 10
-#         self.raw = nn.Parameter(init)
-    
-#     def forward(self, stack, **kwargs):
-#         return torch.tanh(self.raw / 10.0) * 10.0
-
-#     def value(self):
-#         return self.forward(stack=None).detach()
-
-class Scalar(Token):
-    token = "<scalar>"
-    arity = 0
-    def __init__(self, value=1.0):
-        super().__init__()
-
-        self.val = torch.tensor(value)
-    
-    def forward(self, stack, **kwargs):
-        return self.val
-
-    def value(self):
-        return self.val
-
 class UNK(Token):
     token = "<unk>"
     arity = 1
+    def __init__(self):
+        super().__init__()
+
     def forward(self, stack, **kwargs):
         return stack[-1]
+
 
 class Affine(nn.Module):
     def __init__(self, scale=1.0, shift=0.0):
@@ -343,79 +318,60 @@ class Operator(nn.Module):
 
         ops = [tok() for tok in tokens] # default initialization
 
-        self.weights = nn.Parameter(0.1 * torch.rand(len(tokens)))
+        n = len(tokens)
+        # self.weights = nn.Parameter(torch.ones(n) / n)
+        self.weights = nn.Parameter(torch.rand(n))
+
         
         if token_id >= 0: 
+            self.weights.data.fill_(0.0)
             self.weights.data[token_id] = 1.0
             ops[token_id] = token_init
 
         self.ops = nn.ModuleList(ops)
+
+        # self.postprocess = nn.ModuleList([Affine() for _ in range(n)])
         # self.weights.data = F.softmax(self.weights.data, dim=0)
 
         self.gate = nn.Parameter(torch.tensor(gate))
-        self.affine = Affine()
+
+    def term_entropy(self, probs, n_active):
+        return -(probs * torch.log(probs + eps)).sum() / torch.log(n_active.float() + eps)
         
+    def p(self, items, temp):
+        has_nan = torch.stack([torch.isnan(t).any() for t in items])
+        n_active = (~has_nan).sum().clamp(min=1.0)
+
+        logits = self.weights
+        logits = logits.masked_fill(has_nan, float('-inf'))
+        logits = logits / temp
+        p = F.softmax(logits, dim=0)
+
+        entropy = self.term_entropy(p, n_active)
+        return p, entropy
+
     def forward(self, stack, temp=1.0, gate_temp=1.0, hardness=0.0, **kwargs):
-        items = [op(stack, **kwargs) for op in self.ops]
+        items = [(op(stack, **kwargs)) for i, op in enumerate(self.ops)]
+
+        # items = [self.postprocess[i](op(stack, **kwargs)) for i, op in enumerate(self.ops)]
 
         # broadcast to largest shape
         target_shape = torch.broadcast_shapes(*[t.shape for t in items])
         items = [t.broadcast_to(target_shape) for t in items]
-
         out = torch.stack(items, dim=-1)
 
-        logits = self.weights
-        # logits = torch.clamp(self.weights, min=-10.0, max=10.0)
-        has_nan = torch.stack([torch.isnan(t).any() for t in items])
-        logits = logits.masked_fill(has_nan, float('-inf'))
-
-        logits = logits / temp
-
-        #### diversity regularization
-        flat_items = out.view(-1, out.shape[-1]).T
-        norm_items = torch.norm(flat_items, dim=1, keepdim=True)
-        flat_norm_items = flat_items / (norm_items + 1e-8)
-        G = (flat_norm_items @ flat_norm_items.T)
-        # loss_orth = 1e-2 * torch.norm(G - torch.eye(G.shape[0], device=G.device), p='fro')
-        # loss_orth.backward(retain_graph=True)
-
-        ##### Hook for natural gradient
-        ## is too unstable, so not using
-
-        # if logits.requires_grad:
-        #       G = G.detach()
-        #     def natl_grad_hook(grad):
-        #         # return torch.linalg.lstsq(
-        #         #     G + 1e-6 * torch.eye(G.shape[0], device=G.device), 
-        #         #     grad
-        #         # )[0]
-        #         # ginv = torch.linalg.pinv(G + 1e-6 * torch.eye(G.shape[0], device=G.device))
-        #         # return ginv @ grad
-
-        #         # U,S,Vt = torch.linalg.svd(G)
-        #         # threshold = 1e-2
-        #         # inv_S = torch.where(S < threshold, 0.0, 1.0 / S)
-        #         # return Vt.T @ torch.diag(inv_S) @ U.T @ grad
-
-        #     self.weights.register_hook(natl_grad_hook)
-            
-
-        #####
-
-        soft_item = torch.sum(F.softmax(logits, dim=0) * out, dim=-1)
-        hard_item = items[torch.argmax(logits, dim=0)]
+        p, term_entropy = self.p(items, temp)
+        soft_item = torch.sum(p * out, dim=-1)
+        hard_item = items[torch.argmax(p, dim=0)]
 
         # STE
         next_item = soft_item + hardness * (hard_item - soft_item).detach()
-
-        # affine
-        next_item = self.affine(next_item)
 
         # passthrough gate
         a = torch.sigmoid(self.gate / gate_temp)
         next_item = (1 - a) * next_item + a * stack[-1]
 
-        return [*stack, next_item]
+        return [*stack, next_item], term_entropy
 
     def get_token(self, gate_temp=1.0):
         _id = torch.argmax(self.weights).item()
@@ -432,7 +388,8 @@ class Vocab:
         **kwargs,
     ):
         self.seq_len = seq_len
-        self.tokens = tokens #[UNK, *tokens]
+        # self.tokens = [UNK, *tokens]
+        self.tokens = tokens
         self.token_to_id = {
             token.token: i for i, token in enumerate(self.tokens)
         }
@@ -459,16 +416,16 @@ class Vocab:
         for i, s in enumerate(toks):
             _id = self.rep_from_str(s)
             if _id == -1:
-                _id = 0
+                t = None
                 passthrough = 1.0
             else:
                 passthrough = 1.0 # regardless we use passthrough to start from nothing
-            t = self.tokens[_id]()
+                t = self.tokens[_id]()
             ops.append(self._Operator(_id, t, passthrough, self.tokens))
 
         if len(toks) < self.seq_len:
-            _id = 0 # self.pad_token_id
-            ops.extend([self._Operator(_id, self.tokens[_id](), 1.0, self.tokens) for _ in range(self.seq_len - len(toks))])
+            _id = -1 # self.pad_token_id
+            ops.extend([self._Operator(_id, None, 1.0, self.tokens) for _ in range(self.seq_len - len(toks))])
         return ops
 
 class Stack(nn.Module):
@@ -493,26 +450,35 @@ class Stack(nn.Module):
 
         self._iter = kwargs.get('_iter', 2000)
 
+    def T(self, temp, scale=1.0):
+        return scale * F.sigmoid(temp) + eps + 0.01
+
+    def reset_accum(self):
+        self._term_entropy = torch.tensor(0.0)
+
     def forward(self, stack_in=None, _eval=False, **kwargs):
         stack_in = stack_in or self.base_stack
+        temp = self.T(self.temp, self.T0)
+        gate_temp = self.T(self.gate_temp)
 
-        if not _eval:
-            temp = self.T0 * F.relu(self.temp) + 1e-6
-            gate_temp = F.relu(self.gate_temp) + 0.1
-        else:
-            temp = 0.0 * F.relu(self.temp) + 1e-6
-            # gate_temp = F.relu(self.gate_temp) + 0.1
-            gate_temp = 0.0 * self.gate_temp + 0.1
+        if _eval:
+            gate_temp = self.T(self.gate_temp, 0.0)
             kwargs['hardness'] = 1.0
 
+        term_entropy = 0.0
         for i, op in enumerate(self.ops):
-            stack_in = op(stack_in, temp = temp[i], gate_temp = gate_temp, **kwargs)[-self.max_depth:]
+            stack_in, _term_entropy = op(stack_in, temp = temp[i], gate_temp = gate_temp, **kwargs)
+            # stack_in = stack_in[-self.max_depth:]
+            term_entropy = term_entropy + _term_entropy
 
         # elems = torch.stack(stack_in[-self.vocab.seq_len:], dim=-1)
         # attn_weights = F.softmax(self.output_logits / self.output_temp, dim=0)
         # out = torch.sum(elems * attn_weights, dim=-1) # provides gradient, bypass constants that gradient block
         # return out
         
+        # assign cached vars
+        self._term_entropy = self._term_entropy + term_entropy
+
         return stack_in[-1] # last element
 
     @torch.no_grad()
@@ -522,7 +488,7 @@ class Stack(nn.Module):
         final = []
         arity = []
 
-        gate_temp = F.relu(self.gate_temp) + 0.1
+        gate_temp = self.T(self.gate_temp)
         for i, op in enumerate(self.ops):
             token_id, value, gate = op.get_token(gate_temp)
             tokens.append(self.vocab.id_to_token[token_id])
@@ -531,33 +497,10 @@ class Stack(nn.Module):
                 final.append(tokens[-1])
                 arity.append(self.vocab.id_to_arity[token_id])
 
-        # downselect based on arity
-        # cumsum_a = torch.cumsum(1-torch.tensor(arity), dim=0).flip(dims=[0]) 
-        # rev_k = torch.where(cumsum_a > 1)[0]
-        # print(f'{cumsum_a} rev_k {rev_k}', flush=True)
-
-        # if len(rev_k) == 0:
-        #     final = final[-1:]
-        # else:
-        #     # last few tokens, not necessarily a full stack
-        #     k = rev_k[-1].item()
-        #     final = final[k:]
-
-        # S = torch.cumsum(1 - torch.tensor(arity), dim=0)          # S[i] = depth after token i, starting stack=0
-        # suffix_min = torch.flip(
-        #     torch.cummin(torch.flip(S, dims=[0]), dim=0).values, dims=[0]
-        # )  # suffix_min[j] = min(S[j], S[j+1], ..., S[n-1])
-
-        # # want smallest j with S[j-1] <= suffix_min[j]  (S[-1] := 0)
-        # S_prev = torch.cat([torch.zeros(1), S[:-1]])
-        # valid_start = S_prev <= suffix_min
-        # j = torch.where(valid_start)[0][0].item()   # smallest valid start
-        # final = final[j:]
-
         return '\n'*2 + '\t' +\
          '\n\t'.join([" ".join(tokens), 
                      ' '.join([f'{g:.2f}' for g in gates]), 
-                     " ".join(final).replace('<unk>', '').strip()]) + \
+                     " ".join(final).strip()]) + \
          '\n'*2
 
             
@@ -566,41 +509,81 @@ class Stack(nn.Module):
         opt = torch.optim.Adam(self.parameters(), lr=1e-1)
         for i in range(self._iter):
             opt.zero_grad()
+
+            self.reset_accum()
             z_hat = _eval(self.forward)
 
             # log schedule
             T_schedule = math.exp(-i/200)
 
             loss_target = _eval.metric(z_hat, _eval.target)
-            loss_temp = F.relu(self.temp - T_schedule).pow(2.0).mean()
-            loss_gate = (self.gate_temp).pow(2.0).mean()
+            loss_temp = F.relu(self.T(self.temp) - T_schedule).pow(2.0).mean()
+            loss_entropy = self._term_entropy
+            loss_gate = self.T(self.gate_temp).pow(2.0).mean()
             # print(loss_target.item(), loss_temp.item(), self.gate_temp.item())
-            logger.debug(f"Loss target: {loss_target.item()}, temp: {self.temp.mean().item()}, loss gate: {loss_gate.item()}")
+            logger.debug(f"Loss target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, temp: {F.sigmoid(self.temp).mean().item():.2e}, loss gate: {loss_gate.item():.2e}")
 
 
-            # loss = loss_target + 1e-4 * loss_temp 
-            # loss = max(loss_target, loss_temp / 20)
-            # a = (loss_temp / 20) < loss_target
-            b = 0.0#5 # if a else  # 
-            c = 1e-4
-            loss = loss_target + b * loss_temp + c * loss_gate
+            # # loss = loss_target + 1e-4 * loss_temp 
+            # # loss = max(loss_target, loss_temp / 20)
+            # a = (loss_temp / 20) > loss_target
+            # b = 0.05 if a else 1e-4 
+            # c = 0 #1e-4
+            # loss = loss_target + b * loss_temp + c * loss_gate
 
-            # if (loss_target > 1e-3 and self.temp.mean().item() > 1e-2):
-            #     # not converged yet; don't optimize gate
-            #     self.gate_temp.requires_grad_(False)
-            # else:
-            #     self.gate_temp.requires_grad_(True)
+            b = 1e-1 if loss_target < 1e-1 else 1e-4
+            loss = loss_target  + b *  loss_entropy + 1e-4 * loss_temp
+            # loss = max(loss_target, loss_entropy + 1e-1)
+            
+
+            if (loss_target > 1e-3 and loss_entropy > 1e-2):
+                # not converged yet; don't optimize gate
+                self.gate_temp.requires_grad_(False)
+            else:
+                self.gate_temp.requires_grad_(True)
 
             loss.backward()
             opt.step()
             if i % 100 == 0 or i==self._iter-1:
                 # print(i, self.detokenize())
-                losses = f"\nloss_target: {loss_target.item()}, loss_temp: {loss_temp.item()}, loss_gate: {loss_gate.item()}"
+                losses = f"\nloss_target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}"
                 logger.info(f"\nIteration {i}: {self.detokenize()} {losses}")
                 z_hat_hard = _eval(self.forward, _eval=True)
                 _eval.plot(z_hat_hard.detach(), z_hat.detach(), _eval.target, i)
             
-        
+
+        # #### diversity regularization
+        # flat_items = out.view(-1, out.shape[-1]).T
+        # norm_items = torch.norm(flat_items, dim=1, keepdim=True)
+        # flat_norm_items = flat_items / (norm_items + 1e-8)
+        # G = (flat_norm_items @ flat_norm_items.T)
+        # # loss_orth = 1e-2 * torch.norm(G - torch.eye(G.shape[0], device=G.device), p='fro')
+        # # loss_orth.backward(retain_graph=True)
+
+        # ##### Hook for natural gradient
+        # ## is too unstable, so not using
+
+        # # if logits.requires_grad:
+        # #       G = G.detach()
+        # #     def natl_grad_hook(grad):
+        # #         # return torch.linalg.lstsq(
+        # #         #     G + 1e-6 * torch.eye(G.shape[0], device=G.device), 
+        # #         #     grad
+        # #         # )[0]
+        # #         # ginv = torch.linalg.pinv(G + 1e-6 * torch.eye(G.shape[0], device=G.device))
+        # #         # return ginv @ grad
+
+        # #         # U,S,Vt = torch.linalg.svd(G)
+        # #         # threshold = 1e-2
+        # #         # inv_S = torch.where(S < threshold, 0.0, 1.0 / S)
+        # #         # return Vt.T @ torch.diag(inv_S) @ U.T @ grad
+
+        # #     self.weights.register_hook(natl_grad_hook)
+            
+
+        # #####
+
+
 
 ###########
 # class Operator(nn.Module):
