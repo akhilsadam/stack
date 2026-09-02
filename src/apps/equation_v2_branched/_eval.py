@@ -14,7 +14,7 @@ def build_vocab(**_kwargs) -> Vocab:
         # ("exp", 1, lambda stack, **kwargs: torch.exp(stack[-1])),
         ("square", 1, lambda stack, **kwargs: stack[-1] ** 2),
         ("cube", 1, lambda stack, **kwargs: stack[-1] ** 3),
-        # ("+", 2, lambda stack, **kwargs: stack[-1] + stack[-2]),
+        ("+", 2, lambda stack, **kwargs: stack[-1] + stack[-2]),
         # ("-", 2, lambda stack, **kwargs: stack[-1] - stack[-2]),
         # ("*", 2, lambda stack, **kwargs: stack[-1] * stack[-2]),
         ("neg", 1, lambda stack, **kwargs: -stack[-1]),
@@ -61,5 +61,6 @@ class Evaluator():
 
     @property
     def target(self):
-        return torch.sin(3 * self.x) #+ torch.cos(0.005 * self.x)
+        # return torch.sin(0.3 * self.x) + torch.cos(0.05 * self.x) # way too hard, + gets shifted left instead of right
         # return 3 * self.x
+        return 0.75 * self.x + 0.5 * self.x**2

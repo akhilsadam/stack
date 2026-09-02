@@ -324,8 +324,10 @@ class Affine(nn.Module):
         return self.raw_scale * self.scale * _in + self.raw_shift * self.scale
 
 class Operator(nn.Module):
-    def __init__(self, token_id, token_init, gate, tokens: List[Token]):
+    def __init__(self, token_id, token_init, gate, tokens: List[Token], arity):
         super().__init__()
+
+        self.arity = torch.tensor(arity, dtype=torch.int32)
 
         ops = [tok() for tok in tokens] # default initialization
 
@@ -413,6 +415,8 @@ class Vocab:
         self.seq_len = seq_len
         # self.tokens = [UNK, *tokens]
         self.tokens = tokens
+        self.arity = [t.arity for t in self.tokens]
+
         self.token_to_id = {
             token.token: i for i, token in enumerate(self.tokens)
         }
@@ -422,6 +426,8 @@ class Vocab:
         self.id_to_arity = {
             i: token.arity for i, token in enumerate(self.tokens)
         }
+
+        
 
         # self.pad_token_id = self.token_to_id["<unk>"]
         self._Operator = _Operator
@@ -444,11 +450,11 @@ class Vocab:
             else:
                 passthrough = 1.0 # regardless we use passthrough to start from nothing
                 t = self.tokens[_id]()
-            ops.append(self._Operator(_id, t, passthrough, self.tokens))
+            ops.append(self._Operator(_id, t, passthrough, self.tokens, self.arity))
 
         if len(toks) < self.seq_len:
             _id = -1 # self.pad_token_id
-            ops.extend([self._Operator(_id, None, 1.0, self.tokens) for _ in range(self.seq_len - len(toks))])
+            ops.extend([self._Operator(_id, None, 1.0, self.tokens, self.arity) for _ in range(self.seq_len - len(toks))])
         return ops
 
 class Stack(nn.Module):
@@ -474,7 +480,7 @@ class Stack(nn.Module):
         self._iter = kwargs.get('_iter', 2000)
 
     def T(self, temp, scale=1.0):
-        return scale * F.sigmoid(temp) + eps #0.01
+        return scale * F.sigmoid(temp) + eps # 0.01
 
     def reset_accum(self):
         self._term_entropy = torch.tensor(0.0)
@@ -575,9 +581,10 @@ class Stack(nn.Module):
             opt.step()
 
             if i % 100 == 0 or i==self._iter-1:
-                losses = f"\nloss_target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}"
-                logger.info(f"\nIteration {i}: {self.detokenize()} {losses}")
                 z_hat_hard = _eval(self.forward, _eval=True)
+                loss_hard = _eval.metric(z_hat_hard, _eval.target)
+                losses = f"\n loss_final: {loss_hard.item():.2e}, loss_target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}"
+                logger.info(f"\nIteration {i}: {self.detokenize()} {losses}")
                 _eval.plot(z_hat_hard.detach(), z_hat.detach(), _eval.target, i)
             
 

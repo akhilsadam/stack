@@ -15,8 +15,9 @@ from space.tokenizer import Stack, Operator
 # from MCTS import MCTSStack as Stack, PUCTOperator as Operator
 # from search.SGD import Search
 
-app = "equation_v0_linear"
-# app = "equation_v1_branched"
+# app = "equation_v0_composition" # not great, stuck easily
+# app = "equation_v1_scalar" # works okay
+app = "equation_v2_branched" # 
 # app = "qg_basic"
 
 

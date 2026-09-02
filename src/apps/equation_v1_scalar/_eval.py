@@ -63,4 +63,5 @@ class Evaluator():
     def target(self):
         # return torch.sin(3 * self.x) #+ torch.cos(0.005 * self.x)
         # return 3 * self.x
+        #### higher frequencies will not work as seen with SIREN
         return torch.sin(0.75 * (self.x))
