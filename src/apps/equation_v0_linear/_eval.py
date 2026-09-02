@@ -12,8 +12,8 @@ def build_vocab(**_kwargs) -> Vocab:
         ("cos", 1, lambda stack, **kwargs: torch.cos(stack[-1])),
         ("sin", 1, lambda stack, **kwargs: torch.sin(stack[-1])),
         # ("exp", 1, lambda stack, **kwargs: torch.exp(stack[-1])),
-        ("square", 1, lambda stack, **kwargs: stack[-1] ** 2),
-        ("cube", 1, lambda stack, **kwargs: stack[-1] ** 3),
+        # ("square", 1, lambda stack, **kwargs: stack[-1] ** 2),
+        # ("cube", 1, lambda stack, **kwargs: stack[-1] ** 3),
         # ("+", 2, lambda stack, **kwargs: stack[-1] + stack[-2]),
         # ("-", 2, lambda stack, **kwargs: stack[-1] - stack[-2]),
         # ("*", 2, lambda stack, **kwargs: stack[-1] * stack[-2]),
@@ -58,10 +58,11 @@ class Evaluator():
     #     xhf = torch.fft.rfft(x_hat, n=self.x.shape[-1])
     #     xf = torch.fft.rfft(x, n=self.x.shape[-1])
     #     fft = F.mse_loss(xhf.real, xf.real) + F.mse_loss(xhf.imag, xf.imag)
-    #     return mse + 0.01*fft
+    #     return mse + 0.0001*fft
 
     @property
     def target(self):
         # return torch.sin(3 * self.x) #+ torch.cos(0.005 * self.x)
         # return 3 * self.x
+        # return torch.sin(self.x)
         return torch.sin(torch.sin(self.x))

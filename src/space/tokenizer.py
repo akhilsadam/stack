@@ -300,17 +300,28 @@ class UNK(Token):
         return stack[-1]
 
 
+# class Affine(nn.Module):
+#     def __init__(self, scale=1.0, shift=0.0):
+#         super().__init__()
+
+#         init = torch.atanh(torch.clamp(torch.tensor(scale) / 10.0, -0.999, 0.999)) * 10
+#         self.raw_scale = nn.Parameter(init)
+#         init = torch.atanh(torch.clamp(torch.tensor(shift) / 10.0, -0.999, 0.999)) * 10
+#         self.raw_shift = nn.Parameter(init)
+    
+#     def forward(self, _in):
+#         return torch.tanh(self.raw_scale / 10.0) * 10.0 * _in + torch.tanh(self.raw_shift / 10.0) * 10.0
+
 class Affine(nn.Module):
     def __init__(self, scale=1.0, shift=0.0):
         super().__init__()
 
-        init = torch.atanh(torch.clamp(torch.tensor(scale) / 10.0, -0.999, 0.999)) * 10
-        self.raw_scale = nn.Parameter(init)
-        init = torch.atanh(torch.clamp(torch.tensor(shift) / 10.0, -0.999, 0.999)) * 10
-        self.raw_shift = nn.Parameter(init)
+        self.scale = 0.1
+        self.raw_scale = nn.Parameter(torch.tensor(scale) / self.scale)
+        self.raw_shift = nn.Parameter(torch.tensor(shift) / self.scale)
     
     def forward(self, _in):
-        return torch.tanh(self.raw_scale / 10.0) * 10.0 * _in + torch.tanh(self.raw_shift / 10.0) * 10.0
+        return self.raw_scale * self.scale * _in + self.raw_shift * self.scale
 
 class Operator(nn.Module):
     def __init__(self, token_id, token_init, gate, tokens: List[Token]):
@@ -319,21 +330,25 @@ class Operator(nn.Module):
         ops = [tok() for tok in tokens] # default initialization
 
         n = len(tokens)
-        # self.weights = nn.Parameter(torch.ones(n) / n)
-        self.weights = nn.Parameter(torch.rand(n))
+        # self.term_logits = nn.Parameter(torch.ones(n) / n)
+        self.term_logits = nn.Parameter(torch.rand(n))
 
         
         if token_id >= 0: 
-            self.weights.data.fill_(0.0)
-            self.weights.data[token_id] = 1.0
+            self.term_logits.data.fill_(0.0)
+            self.term_logits.data[token_id] = 1.0
             ops[token_id] = token_init
 
         self.ops = nn.ModuleList(ops)
 
-        # self.postprocess = nn.ModuleList([Affine() for _ in range(n)])
+        # self.postprocess = nn.ModuleList([Affine() for _ in range(n)]) # prevents convergence
         # self.weights.data = F.softmax(self.weights.data, dim=0)
+        self.postprocess = Affine()
+        
+        # layer norm instead?
+        self.norm = lambda x: F.layer_norm(x, (x.shape[-1],)) if len(x.shape) > 1 else x
 
-        self.gate = nn.Parameter(torch.tensor(gate))
+        self.gate_logit = nn.Parameter(torch.tensor(gate))
 
     def term_entropy(self, probs, n_active):
         return -(probs * torch.log(probs + eps)).sum() / torch.log(n_active.float() + eps)
@@ -342,13 +357,19 @@ class Operator(nn.Module):
         has_nan = torch.stack([torch.isnan(t).any() for t in items])
         n_active = (~has_nan).sum().clamp(min=1.0)
 
-        logits = self.weights
+        logits = self.term_logits
         logits = logits.masked_fill(has_nan, float('-inf'))
         logits = logits / temp
         p = F.softmax(logits, dim=0)
 
+        # p = F.gumbel_softmax(logits, dim=0, tau=temp, hard=True)
+
         entropy = self.term_entropy(p, n_active)
         return p, entropy
+
+    def gate(self, temp):
+        a = torch.sigmoid(self.gate_logit / temp)
+        return a, -(a * torch.log(a + eps) + (1-a) * torch.log(1-a + eps))
 
     def forward(self, stack, temp=1.0, gate_temp=1.0, hardness=0.0, **kwargs):
         items = [(op(stack, **kwargs)) for i, op in enumerate(self.ops)]
@@ -367,16 +388,18 @@ class Operator(nn.Module):
         # STE
         next_item = soft_item + hardness * (hard_item - soft_item).detach()
 
+        next_item = self.postprocess(next_item)
+
         # passthrough gate
-        a = torch.sigmoid(self.gate / gate_temp)
+        a, gate_entropy = self.gate(gate_temp)
         next_item = (1 - a) * next_item + a * stack[-1]
 
-        return [*stack, next_item], term_entropy
+        return [*stack, next_item], term_entropy, gate_entropy
 
     def get_token(self, gate_temp=1.0):
-        _id = torch.argmax(self.weights).item()
+        _id = torch.argmax(self.term_logits).item()
         _value = self.ops[_id].value()
-        return _id, _value, torch.sigmoid(self.gate / gate_temp)
+        return _id, _value, torch.sigmoid(self.gate_logit / gate_temp)
 
 class Vocab:
 
@@ -451,7 +474,7 @@ class Stack(nn.Module):
         self._iter = kwargs.get('_iter', 2000)
 
     def T(self, temp, scale=1.0):
-        return scale * F.sigmoid(temp) + eps + 0.01
+        return scale * F.sigmoid(temp) + eps #0.01
 
     def reset_accum(self):
         self._term_entropy = torch.tensor(0.0)
@@ -465,11 +488,11 @@ class Stack(nn.Module):
             gate_temp = self.T(self.gate_temp, 0.0)
             kwargs['hardness'] = 1.0
 
-        term_entropy = 0.0
+        _entropy = 0.0
         for i, op in enumerate(self.ops):
-            stack_in, _term_entropy = op(stack_in, temp = temp[i], gate_temp = gate_temp, **kwargs)
+            stack_in, _term_entropy, _gate_entropy = op(stack_in, temp = temp[i], gate_temp = gate_temp, **kwargs)
             # stack_in = stack_in[-self.max_depth:]
-            term_entropy = term_entropy + _term_entropy
+            _entropy = _entropy + _term_entropy + _gate_entropy / len(self.vocab.tokens)
 
         # elems = torch.stack(stack_in[-self.vocab.seq_len:], dim=-1)
         # attn_weights = F.softmax(self.output_logits / self.output_temp, dim=0)
@@ -477,7 +500,7 @@ class Stack(nn.Module):
         # return out
         
         # assign cached vars
-        self._term_entropy = self._term_entropy + term_entropy
+        self._term_entropy = self._term_entropy + _entropy
 
         return stack_in[-1] # last element
 
@@ -506,7 +529,7 @@ class Stack(nn.Module):
             
     
     def _train(self, _eval):
-        opt = torch.optim.Adam(self.parameters(), lr=1e-1)
+        opt = torch.optim.Adam(self.parameters(), lr=1e-2)
         for i in range(self._iter):
             opt.zero_grad()
 
@@ -514,13 +537,16 @@ class Stack(nn.Module):
             z_hat = _eval(self.forward)
 
             # log schedule
-            T_schedule = math.exp(-i/200)
+            # T_schedule = math.exp(-i/200)
+            # loss_temp = F.relu(self.T(self.temp) - T_schedule).pow(2.0).mean()
+            # loss_gate = F.relu(self.T(self.gate_temp) - T_schedule).pow(2.0).mean()
 
             loss_target = _eval.metric(z_hat, _eval.target)
-            loss_temp = F.relu(self.T(self.temp) - T_schedule).pow(2.0).mean()
+
             loss_entropy = self._term_entropy
+            loss_temp = self.T(self.temp).pow(2.0).mean()
             loss_gate = self.T(self.gate_temp).pow(2.0).mean()
-            # print(loss_target.item(), loss_temp.item(), self.gate_temp.item())
+
             logger.debug(f"Loss target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, temp: {F.sigmoid(self.temp).mean().item():.2e}, loss gate: {loss_gate.item():.2e}")
 
 
@@ -530,22 +556,25 @@ class Stack(nn.Module):
             # b = 0.05 if a else 1e-4 
             # c = 0 #1e-4
             # loss = loss_target + b * loss_temp + c * loss_gate
-
-            b = 1e-1 if loss_target < 1e-1 else 1e-4
-            loss = loss_target  + b *  loss_entropy + 1e-4 * loss_temp
             # loss = max(loss_target, loss_entropy + 1e-1)
             
 
-            if (loss_target > 1e-3 and loss_entropy > 1e-2):
-                # not converged yet; don't optimize gate
-                self.gate_temp.requires_grad_(False)
-            else:
-                self.gate_temp.requires_grad_(True)
+            # if (loss_target > 1e-3 and loss_entropy > 1e-2):
+            #     # not converged yet; don't optimize gate
+            #     self.gate_temp.requires_grad_(False)
+            # else:
+            #     self.gate_temp.requires_grad_(True)
+
+            converged = (loss_target < 1e-6) or (i > (self._iter - 1000))
+
+            b = 1e-1 if converged else 1e-4
+            loss = loss_target + b * loss_entropy + 1e-4 * loss_temp + 1e-4 * loss_gate
+
 
             loss.backward()
             opt.step()
+
             if i % 100 == 0 or i==self._iter-1:
-                # print(i, self.detokenize())
                 losses = f"\nloss_target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}"
                 logger.info(f"\nIteration {i}: {self.detokenize()} {losses}")
                 z_hat_hard = _eval(self.forward, _eval=True)

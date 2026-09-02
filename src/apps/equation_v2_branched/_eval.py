@@ -61,6 +61,5 @@ class Evaluator():
 
     @property
     def target(self):
-        # return torch.sin(3 * self.x) #+ torch.cos(0.005 * self.x)
+        return torch.sin(3 * self.x) #+ torch.cos(0.005 * self.x)
         # return 3 * self.x
-        return torch.sin(0.75 * (self.x))
