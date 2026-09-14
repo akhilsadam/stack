@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from space.tokenizer import Vocab, make_static_token
+from space.token import make_static_token
+from space.tokenizer import Vocab
 
 def build_vocab(**_kwargs) -> Vocab:
     """Vocabulary of QG tokens understood by both the embedder and ``qg``."""
@@ -25,14 +26,16 @@ def build_vocab(**_kwargs) -> Vocab:
 
 class Evaluator():
     def __init__(self, device='cpu', **_kwargs):
-        # self.grid_size = grid_size
+        self.grid = _kwargs.get('grid', [120,])
         self.device = device
+        assert len(self.grid) == 1
 
         # self.x = torch.linspace(0, 1, grid_size, device=device)
         # self.y = torch.linspace(0, 1, grid_size, device=device)
         # self.X, self.Y = torch.meshgrid(self.x, self.y, indexing="ij")
 
-        self.x = torch.linspace(-4,4,120, device=device)
+        self.x = torch.linspace(-4,4,self.grid[0], device=device)
+
 
     def __call__(self, closure, **kwargs):
         return closure(x = self.x, **kwargs)

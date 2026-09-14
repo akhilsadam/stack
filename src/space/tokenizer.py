@@ -10,16 +10,12 @@ import torch.nn.functional as F
 
 import logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
 )
 logging.getLogger('PIL').setLevel(logging.WARNING)
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
-
-
-# from .arity import get_tree_coords
 
 # TODO extend to multidimensionality / matrix / vector / tensor equations
 ## needs to add physical dimension to token
@@ -27,381 +23,9 @@ logger = logging.getLogger(__name__)
 ## needs to handle tensor contractions and maybe Einstein summation notation...
 ## quite difficult for now as solver doesn't support either yet
 
-# TokenSchema
-# Generalized scalar evaluation lookups
-# UNARY_MATH_OPS = {
-#     "sin": math.sin,
-#     "cos": math.cos,
-#     "sqrt": lambda x: math.sqrt(x) if x >= 0 else float("nan"),
-#     "square": lambda x: x**2,
-#     "cube": lambda x: x**3,
-#     "neg": lambda x: -x,
-#     "exp": math.exp,
-#     "log": lambda x: math.log(x) if x > 0 else float("nan"),
-# }
-
-# BINARY_MATH_OPS = {
-#     "+": lambda a, b: a + b,
-#     "-": lambda a, b: a - b,
-#     "*": lambda a, b: a * b,
-#     "/": lambda a, b: a / b if b != 0 else float("nan"),
-# }
-
-# def _is_zero(val: Optional[float]) -> bool:
-#     return val is not None and math.isclose(val, 0.0, abs_tol=1e-6)
-
-
-# def _is_one(val: Optional[float]) -> bool:
-#     return val is not None and math.isclose(val, 1.0, abs_tol=1e-6)
-
-
-# @dataclass
-# class Rule:
-#     """User-defined rewrite rule using RPN pattern matching.
-
-#     Capitalized tokens (e.g., 'A', 'X') act as wildcard variables matching any subtree.
-#     """
-
-#     pattern: str  # e.g., "psi lap" or "A invlap lap"
-#     replacement: str  # e.g., "q" or "A"
-
-
-
-# class Node:
-#     """Atomic syntax tree element."""
-
-#     def __init__(
-#         self, name: str, arity: int, value: Optional[float] = None
-#     ):
-#         self.name = name
-#         self.arity = arity
-#         self.value = value
-#         self.children: List["Node"] = []
-
-#     def clone(self) -> "Node":
-#         new_node = Node(self.name, self.arity, self.value)
-#         new_node.children = [c.clone() for c in self.children]
-#         return new_node
-
-#     @property
-#     def is_scalar(self) -> bool:
-#         return self.value is not None
-
-
-# class Tree:
-#     """Tree container for traversal, evaluation, pattern matching, and rule application."""
-
-#     def __init__(self, root: Node):
-#         self.root = root
-
-#     def to_rpn(self) -> List[str]:
-#         return self._to_rpn_node(self.root)
-
-#     def _to_rpn_node(self, node: Node) -> List[str]:
-#         rpn = []
-#         for child in node.children:
-#             rpn.extend(self._to_rpn_node(child))
-#         rpn.append(
-#             f"{node.value:.4g}" if node.value is not None else node.name
-#         )
-#         return rpn
-
-#     @classmethod
-#     def from_rpn(cls, tokens: List[str], vocab: "Vocab") -> Optional["Tree"]:
-#         stack: List[Node] = []
-#         for tok in tokens:
-#             if not tok or tok in ("<unk>", "<pad>"):
-#                 continue
-
-#             # Wildcard tokens (e.g., 'A', 'X') during pattern parsing
-#             if tok[0].isupper():
-#                 stack.append(Node(tok, arity=0))
-#                 continue
-
-#             rep = vocab.rep_from_str(tok)
-#             if rep._id == vocab.scalar_token_id:
-#                 node = Node("<scalar>", 0, value=rep._mag)
-#             else:
-#                 arity = vocab.id_to_arity.get(rep._id, 0)
-#                 node = Node(vocab.id_to_token[rep._id], arity)
-
-#             if node.arity == 0:
-#                 stack.append(node)
-#             elif node.arity == 1:
-#                 if len(stack) < 1:
-#                     return None
-#                 node.children = [stack.pop()]
-#                 stack.append(node)
-#             elif node.arity == 2:
-#                 if len(stack) < 2:
-#                     return None
-#                 right = stack.pop()
-#                 left = stack.pop()
-#                 node.children = [left, right]
-#                 stack.append(node)
-
-#         return cls(stack[0]) if len(stack) == 1 else None
-
-#     def simplify(self, vocab: "Vocab") -> "Tree":
-#         self.root = self._simplify_node(self.root, vocab)
-#         return self
-
-#     def _simplify_node(self, node: Node, vocab: "Vocab") -> Node:
-#         # Bottom-up recursion across children
-#         node.children = [
-#             self._simplify_node(c, vocab) for c in node.children
-#         ]
-
-#         # 1. User Rewrite Rules
-#         for pat_tree, repl_tree in vocab.compiled_rules:
-#             bindings: Dict[str, Node] = {}
-#             if self._match(node, pat_tree.root, bindings):
-#                 rewritten = self._instantiate(repl_tree.root, bindings)
-#                 return self._simplify_node(rewritten, vocab)
-
-#         # 2. Generalized Constant Folding & Unary/Binary Math Evaluation
-#         if vocab.fold_constants:
-#             # Unary evaluations (sin, cos, sqrt, square, cube, neg, exp, log)
-#             if node.arity == 1 and len(node.children) == 1:
-#                 child = node.children[0]
-#                 if child.is_scalar and node.name in UNARY_MATH_OPS:
-#                     try:
-#                         res = UNARY_MATH_OPS[node.name](child.value)
-#                         if not math.isnan(res) and not math.isinf(res):
-#                             return Node("<scalar>", 0, value=res)
-#                     except (ValueError, OverflowError, ZeroDivisionError):
-#                         pass
-
-#             # Binary evaluations (+, -, *, /)
-#             elif node.arity == 2 and len(node.children) == 2:
-#                 left, right = node.children[0], node.children[1]
-
-#                 if (
-#                     left.is_scalar
-#                     and right.is_scalar
-#                     and node.name in BINARY_MATH_OPS
-#                 ):
-#                     try:
-#                         res = BINARY_MATH_OPS[node.name](
-#                             left.value, right.value
-#                         )
-#                         if not math.isnan(res) and not math.isinf(res):
-#                             return Node("<scalar>", 0, value=res)
-#                     except (ValueError, OverflowError, ZeroDivisionError):
-#                         pass
-
-#                 # Associative Constant Merging: c1 * (c2 * X) -> (c1 * c2) * X
-#                 if node.name == "*":
-#                     if (
-#                         left.is_scalar
-#                         and right.name == "*"
-#                         and len(right.children) == 2
-#                     ):
-#                         if right.children[0].is_scalar:
-#                             merged = left.value * right.children[0].value
-#                             new_node = Node("*", 2)
-#                             new_node.children = [
-#                                 Node("<scalar>", 0, value=merged),
-#                                 right.children[1],
-#                             ]
-#                             return self._simplify_node(new_node, vocab)
-#                         elif right.children[1].is_scalar:
-#                             merged = left.value * right.children[1].value
-#                             new_node = Node("*", 2)
-#                             new_node.children = [
-#                                 Node("<scalar>", 0, value=merged),
-#                                 right.children[0],
-#                             ]
-#                             return self._simplify_node(new_node, vocab)
-
-#                 # Tolerance-based Identity Reductions
-#                 if node.name == "*":
-#                     if _is_one(right.value):
-#                         return left
-#                     if _is_one(left.value):
-#                         return right
-#                     if _is_zero(right.value) or _is_zero(left.value):
-#                         return Node("<scalar>", 0, value=0.0)
-#                 elif node.name == "+":
-#                     if _is_zero(right.value):
-#                         return left
-#                     if _is_zero(left.value):
-#                         return right
-#                 elif node.name == "-":
-#                     if _is_zero(right.value):
-#                         return left
-
-#         return node
-
-#     def _match(
-#         self, node: Node, pattern: Node, bindings: Dict[str, Node]
-#     ) -> bool:
-#         if pattern.name[0].isupper():
-#             if pattern.name in bindings:
-#                 return self._to_rpn_node(node) == self._to_rpn_node(
-#                     bindings[pattern.name]
-#                 )
-#             bindings[pattern.name] = node
-#             return True
-
-#         if node.name != pattern.name or len(node.children) != len(
-#             pattern.children
-#         ):
-#             return False
-
-#         return all(
-#             self._match(c, pc, bindings)
-#             for c, pc in zip(node.children, pattern.children)
-#         )
-
-#     def _instantiate(
-#         self, template: Node, bindings: Dict[str, Node]
-#     ) -> Node:
-#         if template.name[0].isupper():
-#             return bindings[template.name].clone()
-
-#         new_node = Node(template.name, template.arity, template.value)
-#         new_node.children = [
-#             self._instantiate(c, bindings) for c in template.children
-#         ]
-#         return new_node
-eps = 1e-6
-
-class Token(nn.Module):
-    """Token definition (by user)."""
-    token = "<base>"
-    arity = 1
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, stack, **kwargs):
-        raise NotImplementedError()
-    
-    def value(self):
-        return None
-
-def make_static_token(name, _arity, func):
-    class StaticToken(Token):
-        token = name.strip().lower()
-        arity = _arity
-        def __init__(self):
-            super().__init__()
-            self.forward = func
-    return StaticToken
-
-class UNK(Token):
-    token = "<unk>"
-    arity = 1
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, stack, **kwargs):
-        return stack[-1]
-
-
-# class Affine(nn.Module):
-#     def __init__(self, scale=1.0, shift=0.0):
-#         super().__init__()
-
-#         init = torch.atanh(torch.clamp(torch.tensor(scale) / 10.0, -0.999, 0.999)) * 10
-#         self.raw_scale = nn.Parameter(init)
-#         init = torch.atanh(torch.clamp(torch.tensor(shift) / 10.0, -0.999, 0.999)) * 10
-#         self.raw_shift = nn.Parameter(init)
-    
-#     def forward(self, _in):
-#         return torch.tanh(self.raw_scale / 10.0) * 10.0 * _in + torch.tanh(self.raw_shift / 10.0) * 10.0
-
-class Affine(nn.Module):
-    def __init__(self, scale=1.0, shift=0.0):
-        super().__init__()
-
-        self.scale = 0.1
-        self.raw_scale = nn.Parameter(torch.tensor(scale) / self.scale)
-        self.raw_shift = nn.Parameter(torch.tensor(shift) / self.scale)
-    
-    def forward(self, _in):
-        return self.raw_scale * self.scale * _in + self.raw_shift * self.scale
-
-class Operator(nn.Module):
-    def __init__(self, token_id, token_init, gate, tokens: List[Token], arity):
-        super().__init__()
-
-        self.arity = torch.tensor(arity, dtype=torch.int32)
-
-        ops = [tok() for tok in tokens] # default initialization
-
-        n = len(tokens)
-        # self.term_logits = nn.Parameter(torch.ones(n) / n)
-        self.term_logits = nn.Parameter(torch.rand(n))
-
-        
-        if token_id >= 0: 
-            self.term_logits.data.fill_(0.0)
-            self.term_logits.data[token_id] = 1.0
-            ops[token_id] = token_init
-
-        self.ops = nn.ModuleList(ops)
-
-        # self.postprocess = nn.ModuleList([Affine() for _ in range(n)]) # prevents convergence
-        # self.weights.data = F.softmax(self.weights.data, dim=0)
-        self.postprocess = Affine()
-        
-        # layer norm instead?
-        self.norm = lambda x: F.layer_norm(x, (x.shape[-1],)) if len(x.shape) > 1 else x
-
-        self.gate_logit = nn.Parameter(torch.tensor(gate))
-
-    def term_entropy(self, probs, n_active):
-        return -(probs * torch.log(probs + eps)).sum() / torch.log(n_active.float() + eps)
-        
-    def p(self, items, temp):
-        has_nan = torch.stack([torch.isnan(t).any() for t in items])
-        n_active = (~has_nan).sum().clamp(min=1.0)
-
-        logits = self.term_logits
-        logits = logits.masked_fill(has_nan, float('-inf'))
-        logits = logits / temp
-        p = F.softmax(logits, dim=0)
-
-        # p = F.gumbel_softmax(logits, dim=0, tau=temp, hard=True)
-
-        entropy = self.term_entropy(p, n_active)
-        return p, entropy
-
-    def gate(self, temp):
-        a = torch.sigmoid(self.gate_logit / temp)
-        return a, -(a * torch.log(a + eps) + (1-a) * torch.log(1-a + eps))
-
-    def forward(self, stack, temp=1.0, gate_temp=1.0, hardness=0.0, **kwargs):
-        items = [(op(stack, **kwargs)) for i, op in enumerate(self.ops)]
-
-        # items = [self.postprocess[i](op(stack, **kwargs)) for i, op in enumerate(self.ops)]
-
-        # broadcast to largest shape
-        target_shape = torch.broadcast_shapes(*[t.shape for t in items])
-        items = [t.broadcast_to(target_shape) for t in items]
-        out = torch.stack(items, dim=-1)
-
-        p, term_entropy = self.p(items, temp)
-        soft_item = torch.sum(p * out, dim=-1)
-        hard_item = items[torch.argmax(p, dim=0)]
-
-        # STE
-        next_item = soft_item + hardness * (hard_item - soft_item).detach()
-
-        next_item = self.postprocess(next_item)
-
-        # passthrough gate
-        a, gate_entropy = self.gate(gate_temp)
-        next_item = (1 - a) * next_item + a * stack[-1]
-
-        return [*stack, next_item], term_entropy, gate_entropy
-
-    def get_token(self, gate_temp=1.0):
-        _id = torch.argmax(self.term_logits).item()
-        _value = self.ops[_id].value()
-        return _id, _value, torch.sigmoid(self.gate_logit / gate_temp)
+from .util import *
+from .token import *
+from .operator import *
 
 class Vocab:
 
@@ -409,7 +33,7 @@ class Vocab:
         self,
         tokens: List[Token],
         seq_len: int = 64,
-        _Operator = Operator,
+        operator_bases = [OpRep, OpParam],
         **kwargs,
     ):
         self.seq_len = seq_len
@@ -427,10 +51,8 @@ class Vocab:
             i: token.arity for i, token in enumerate(self.tokens)
         }
 
-        
-
         # self.pad_token_id = self.token_to_id["<unk>"]
-        self._Operator = _Operator
+        self._Operator = Operator(operator_bases)
 
     def __len__(self):
         return len(self.tokens)
@@ -442,6 +64,15 @@ class Vocab:
     def tokenize_str(self, _str: str):
         ops = []
         toks = _str.split(" ")
+
+        init_kwargs = {
+            "tokens": self.tokens,
+            "arity": self.arity,
+            "token_id": -1,
+            "token_init": None,
+            "gate_init": 1.0,
+        }
+
         for i, s in enumerate(toks):
             _id = self.rep_from_str(s)
             if _id == -1:
@@ -450,11 +81,17 @@ class Vocab:
             else:
                 passthrough = 1.0 # regardless we use passthrough to start from nothing
                 t = self.tokens[_id]()
-            ops.append(self._Operator(_id, t, passthrough, self.tokens, self.arity))
+            ops.append(self._Operator(
+                init = {
+                    **init_kwargs,
+                    "token_id": _id,
+                    "token_init": t,
+                    "gate_init": passthrough,
+                },
+            ))
 
         if len(toks) < self.seq_len:
-            _id = -1 # self.pad_token_id
-            ops.extend([self._Operator(_id, None, 1.0, self.tokens, self.arity) for _ in range(self.seq_len - len(toks))])
+            ops.extend([self._Operator(init=init_kwargs) for _ in range(self.seq_len - len(toks))])
         return ops
 
 class Stack(nn.Module):
@@ -466,14 +103,14 @@ class Stack(nn.Module):
             self.vocab.tokenize_str(init_str)
         )
 
-        self.base_stack = [torch.tensor(1.0),] * self.vocab.seq_len # padding
-        self.max_depth = kwargs.get("max_depth", 12)
+        self.capacity = kwargs.get("capacity", 4)
+        self.stack = self.init_stack()
 
         self.T0 = T0
         self.temp = nn.Parameter(torch.ones(self.vocab.seq_len))
         self.gate_temp = nn.Parameter(torch.tensor(1.0))
 
-        self.output_logits = nn.Parameter(torch.zeros(min(self.vocab.seq_len, self.max_depth)))
+        self.output_logits = nn.Parameter(torch.zeros(min(self.vocab.seq_len, self.capacity)))
         self.output_logits.data[-1] = 1.0
         self.output_temp = 1.0
 
@@ -482,11 +119,14 @@ class Stack(nn.Module):
     def T(self, temp, scale=1.0):
         return scale * F.sigmoid(temp) + eps # 0.01
 
+    def init_stack(self, device=None, dtype=torch.float32):
+       return torch.ones(self.capacity, dtype=dtype, device=device)
+
     def reset_accum(self):
         self._term_entropy = torch.tensor(0.0)
 
     def forward(self, stack_in=None, _eval=False, **kwargs):
-        stack_in = stack_in or self.base_stack
+        stack = stack_in or self.stack
         temp = self.T(self.temp, self.T0)
         gate_temp = self.T(self.gate_temp)
 
@@ -496,7 +136,7 @@ class Stack(nn.Module):
 
         _entropy = 0.0
         for i, op in enumerate(self.ops):
-            stack_in, _term_entropy, _gate_entropy = op(stack_in, temp = temp[i], gate_temp = gate_temp, **kwargs)
+            stack, _term_entropy, _gate_entropy = op(stack, temp = temp[i], gate_temp = gate_temp, **kwargs)
             # stack_in = stack_in[-self.max_depth:]
             _entropy = _entropy + _term_entropy + _gate_entropy / len(self.vocab.tokens)
 
@@ -508,7 +148,7 @@ class Stack(nn.Module):
         # assign cached vars
         self._term_entropy = self._term_entropy + _entropy
 
-        return stack_in[-1] # last element
+        return stack[-1] # last element
 
     @torch.no_grad()
     def detokenize(self, threshold = 0.95):
