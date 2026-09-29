@@ -65,21 +65,25 @@ class Vocab:
         ops = []
         toks = _str.split(" ")
 
+        # passthrough = 1.0
+        passthrough = 0.2
+        
         init_kwargs = {
             "tokens": self.tokens,
             "arity": self.arity,
             "token_id": -1,
             "token_init": None,
-            "gate_init": 1.0,
+            "gate_init": passthrough,
         }
 
         for i, s in enumerate(toks):
             _id = self.rep_from_str(s)
             if _id == -1:
                 t = None
-                passthrough = 1.0
+                passthrough = passthrough  #torch.rand((1,)).item()
             else:
-                passthrough = 1.0 # regardless we use passthrough to start from nothing
+                passthrough = passthrough 
+                # passthrough = 0.1 # regardless we use passthrough to start from nothing
                 t = self.tokens[_id]()
             ops.append(self._Operator(
                 init = {
@@ -92,6 +96,8 @@ class Vocab:
 
         if len(toks) < self.seq_len:
             ops.extend([self._Operator(init=init_kwargs) for _ in range(self.seq_len - len(toks))])
+
+        # print(ops[0].__dict__)
         return ops
 
 class Stack(nn.Module):
@@ -120,7 +126,8 @@ class Stack(nn.Module):
         return scale * F.sigmoid(temp) + eps # 0.01
 
     def init_stack(self, device=None, dtype=torch.float32):
-       return torch.ones(self.capacity, dtype=dtype, device=device)
+        return torch.ones(self.capacity, dtype=dtype, device=device)
+        # return torch.stack([torch.tensor(self.vocab.tokens[0]()(None),device=device) for i in range(self.capacity)], dim=0)
 
     def reset_accum(self):
         self._term_entropy = torch.tensor(0.0)
@@ -159,7 +166,7 @@ class Stack(nn.Module):
 
         gate_temp = self.T(self.gate_temp)
         for i, op in enumerate(self.ops):
-            token_id, value, gate = op.get_token(gate_temp)
+            token_id, gate = op.get_token(gate_temp)
             tokens.append(self.vocab.id_to_token[token_id])
             gates.append(gate)
             if gate < threshold:
@@ -168,7 +175,7 @@ class Stack(nn.Module):
 
         return '\n'*2 + '\t' +\
          '\n\t'.join([" ".join(tokens), 
-                     ' '.join([f'{g:.2f}' for g in gates]), 
+                     ' '.join([f'{g.item():.2f}' for g in gates]), 
                      " ".join(final).strip()]) + \
          '\n'*2
 
@@ -187,7 +194,11 @@ class Stack(nn.Module):
             # loss_temp = F.relu(self.T(self.temp) - T_schedule).pow(2.0).mean()
             # loss_gate = F.relu(self.T(self.gate_temp) - T_schedule).pow(2.0).mean()
 
-            loss_target = _eval.metric(z_hat, _eval.target)
+            loss_target = _eval.metric(z_hat, _eval.target) # full-batch
+
+            # random subset
+            # mask = torch.randperm(z_hat.shape[0], device=z_hat.device)[:10]
+            # loss_target = _eval.metric(z_hat[mask], _eval.target[mask])
 
             loss_entropy = self._term_entropy
             loss_temp = self.T(self.temp).pow(2.0).mean()
@@ -211,7 +222,7 @@ class Stack(nn.Module):
             # else:
             #     self.gate_temp.requires_grad_(True)
 
-            converged = (loss_target < 1e-6) or (i > (self._iter - 1000))
+            converged = (loss_target < 1e-6) or (i > (self._iter*0.5))
 
             b = 1e-1 if converged else 1e-4
             loss = loss_target + b * loss_entropy + 1e-4 * loss_temp + 1e-4 * loss_gate

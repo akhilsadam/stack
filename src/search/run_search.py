@@ -16,8 +16,10 @@ from space.tokenizer import Stack, Operator
 # from search.SGD import Search
 
 # app = "equation_v0_composition" # not great, stuck easily
-app = "equation_v1_scalar" # works okay
-# app = "equation_v2_branched" # 
+# app = "equation_v1_scalar" # works okay
+app = "equation_v1a_scalar" # works okay
+# app = "equation_v2_branched" # + (fails)
+# app = "equation_v3_branched" # * (fails)
 # app = "qg_basic"
 
 

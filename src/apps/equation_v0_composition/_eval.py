@@ -27,15 +27,15 @@ def build_vocab(**_kwargs) -> Vocab:
 
 class Evaluator():
     def __init__(self, device='cpu', **_kwargs):
-        self.grid = _kwargs.get('grid', [120,])
+        self.grid = _kwargs.get('grid', [1, 120])
         self.device = device
-        assert len(self.grid) == 1
+        assert len(self.grid) == 2
 
         # self.x = torch.linspace(0, 1, grid_size, device=device)
         # self.y = torch.linspace(0, 1, grid_size, device=device)
         # self.X, self.Y = torch.meshgrid(self.x, self.y, indexing="ij")
 
-        self.x = torch.linspace(-4,4,self.grid[0], device=device)
+        self.x = torch.linspace(-4,4,self.grid[-1], device=device)[None,...]
 
     def __call__(self, closure, **kwargs):
         return closure(x = self.x, **kwargs)
@@ -48,9 +48,9 @@ class Evaluator():
     def plot(self, y_hat_hard, y_hat_soft, y, iter):
         from matplotlib import pyplot as plt
         plt.figure()
-        plt.plot(self.x.cpu(), y_hat_soft.detach().cpu(), label="y_hat_soft")
-        plt.plot(self.x.cpu(), y_hat_hard.detach().cpu(), label="y_hat_hard")
-        plt.plot(self.x.cpu(), y.cpu(), label="y")
+        plt.plot(self.x.cpu()[0], y_hat_soft.detach().cpu()[0], label="y_hat_soft")
+        plt.plot(self.x.cpu()[0], y_hat_hard.detach().cpu()[0], label="y_hat_hard")
+        plt.plot(self.x.cpu()[0], y.cpu()[0], label="y")
         plt.legend()
         plt.savefig(f"y_hat_{iter}.png")
         plt.close()
