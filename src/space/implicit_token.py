@@ -1,14 +1,18 @@
-from .tokenizer import Operator as BaseOperator
+from .tokenizer import OpRep as BaseOpRep
 
-class Operator(BaseOperator):
+
+
+class Operator(BaseOpRep):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.rep = Rep(**kwargs)
+        wrapper = ContinuousSurrogateWrapper(
+            original_module_list=self.ops,
+            input_dim=1, output_dim=1, embed_dim=self.n+4
+        )
+        wrapper.train_and_freeze_surrogate(epochs=40)
 
-    def freeze(self):
-        for param in self.rep.parameters():
-            param.requires_grad = False
+        self.rep = wrapper
 
     def working_set(self, stack, **kwargs):
         items = [op(stack, **kwargs) for i, op in enumerate(self.ops)]

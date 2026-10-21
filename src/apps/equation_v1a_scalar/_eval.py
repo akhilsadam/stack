@@ -7,13 +7,13 @@ from space.token import make_static_token
 from space.tokenizer import Vocab
 
 def norm(x, f, rel_eps=1e-2, max_scale=10.0):
-    # return f(x)
-    vin = torch.std(x, dim=-1, keepdim=True, unbiased=False).detach()
-    o = f(x)
-    vout = torch.std(o, dim=-1, keepdim=True, unbiased=False).detach()
-    scale = vin / (vout + rel_eps * vin + 1e-8)
-    scale = torch.clamp(scale, max=max_scale)
-    return o * scale
+    return f(x)
+    # vin = torch.std(x, dim=-1, keepdim=True, unbiased=False).detach()
+    # o = f(x)
+    # vout = torch.std(o, dim=-1, keepdim=True, unbiased=False).detach()
+    # scale = vin / (vout + rel_eps * vin + 1e-8)
+    # scale = torch.clamp(scale, max=max_scale)
+    # return o * scale
 
 def build_vocab(**_kwargs) -> Vocab:
     """Vocabulary of QG tokens understood by both the embedder and ``qg``."""

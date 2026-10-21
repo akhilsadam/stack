@@ -1,7 +1,10 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from typing import List, Union, Sequence
 from dataclasses import dataclass
 import traceback
-import torch
+import logging
 
 from qg.solver.grid.cartesian import CartesianGrid
 from qg.solver.opt.derivative import Derivative
@@ -10,17 +13,19 @@ from qg.solver.opt.operator.rpn import RPNCompiler
 from qg.solver.opt.operator import ImplicitLinearOperator, define_explicit_operator
 from qg.solver.integrator import Integrator
 from omegaconf import OmegaConf
-import logging
 
-from space.tokens import Token, Rule, Vocab
+from space.util import eps
+from space.token import make_static_token
+from space.tokenizer import Vocab
 
+def norm(x, f, rel_eps=1e-2, max_scale=10.0):
+    return f(x)
 
 @dataclass
 class _LaTeXNode:
     text: str
     prec: int
     is_leaf: bool = False
-
 
 def rpn_to_latex(rpn: Union[str, Sequence[str]]) -> str:
     """Converts an RPN token string or sequence into a formatted LaTeX string."""
@@ -33,26 +38,11 @@ def rpn_to_latex(rpn: Union[str, Sequence[str]]) -> str:
         return ""
 
     greek_vars = {
-        "psi": r"\psi",
-        "ph": r"\hat{\psi}",
-        "omega": r"\omega",
-        "alpha": r"\alpha",
-        "beta": r"\beta",
-        "gamma": r"\gamma",
-        "delta": r"\delta",
-        "theta": r"\theta",
-        "phi": r"\phi",
-        "pi": r"\pi",
-        "sigma": r"\sigma",
-        "lambda": r"\lambda",
-        "mu": r"\mu",
-        "nu": r"\nu",
-        "rho": r"\rho",
-        "tau": r"\tau",
-        "chi": r"\chi",
-        "eta": r"\eta",
-        "zeta": r"\zeta",
-        "epsilon": r"\epsilon",
+        "q": r"q", "psi": r"\psi", "ph": r"\hat{\psi}", "omega": r"\omega", "alpha": r"\alpha", 
+        "beta": r"\beta", "gamma": r"\gamma", "delta": r"\delta", "theta": r"\theta", 
+        "phi": r"\phi", "pi": r"\pi", "sigma": r"\sigma", "lambda": r"\lambda", 
+        "mu": r"\mu", "nu": r"\nu", "rho": r"\rho", "tau": r"\tau", "chi": r"\chi", 
+        "eta": r"\eta", "zeta": r"\zeta", "epsilon": r"\epsilon",
     }
 
     def _paren(node: _LaTeXNode, min_prec: int) -> str:
@@ -79,7 +69,7 @@ def rpn_to_latex(rpn: Union[str, Sequence[str]]) -> str:
                 text = f"{_paren(a, 1)} - {_paren(b, 2)}"
                 prec = 1
             elif t_low in ("*", "mul"):
-                text = f"{_paren(a, 2)} \cdot {_paren(b, 2)}"
+                text = rf"{_paren(a, 2)} \cdot {_paren(b, 2)}"
                 prec = 2
             elif t_low in ("/", "div"):
                 text = rf"\frac{{{a.text}}}{{{b.text}}}"
@@ -137,7 +127,7 @@ def rpn_to_latex(rpn: Union[str, Sequence[str]]) -> str:
                 prec = 4
             stack.append(_LaTeXNode(text, prec))
 
-        # Operands (variables / constants)
+        # Operands
         else:
             text = greek_vars.get(t_low, token)
             stack.append(_LaTeXNode(text, 4, is_leaf=True))
@@ -148,83 +138,59 @@ def rpn_to_latex(rpn: Union[str, Sequence[str]]) -> str:
     return str(stack[0].text)
 
 
-
-def build_vocab() -> Vocab:
+def build_vocab(**_kwargs) -> Vocab:
     """Vocabulary of QG tokens understood by both the embedder and ``qg``."""
     token_specs = [
-        ("q", 0),
-        ("psi", 0),
-        ("u", 0),
-        ("v", 0),
-        ("x", 0),
-        ("y", 0),
-        ("dx", 1),
-        ("dy", 1),
-        ("lap", 1),
-        ("invlap", 1),
-        ("sqrt", 1),
-        ("cos", 1),
-        ("sin", 1),
-        # ("exp", 1),
-        ("square", 1),
-        ("cube", 1),
-        ("+", 2),
-        ("-", 2),
-        ("*", 2),
-        ("jacobian", 2),
-        ("neg", 1),
-        # ("dealias", 1),
-    ]
 
-
-    reduction_rules = [
-        Rule(pattern="psi lap", replacement="q"),            
-        Rule(pattern="q invlap", replacement="psi"),         
-        Rule(pattern="psi dy neg", replacement="u"),         
-        Rule(pattern="psi dx", replacement="v"),             
-        Rule(pattern="A invlap lap", replacement="A"),       
-        Rule(pattern="A lap invlap", replacement="A"),       
         
-        # --- Spatial Coordinate Derivatives & Laplacians ---
-        Rule(pattern="x lap", replacement="0"),              
-        Rule(pattern="y lap", replacement="0"),              
-        Rule(pattern="x dy", replacement="0"),               
-        Rule(pattern="y dx", replacement="0"),               
-        Rule(pattern="x dx", replacement="1"),               
-        Rule(pattern="y dy", replacement="1"),                   
-
+        # ("lω", 0, lambda stack, **kwargs: kwargs.get("lap_func", lambda z: z)(kwargs.get("q", 0.0))),
+        ("ω", 0, lambda stack, **kwargs: kwargs.get("q", 0.0)),
+        ("ψ", 0, lambda stack, **kwargs: kwargs.get("psi", 0.0)),
+        # ("u", 0, lambda stack, **kwargs: kwargs.get("u", 0.0)),
+        # ("v", 0, lambda stack, **kwargs: kwargs.get("v", 0.0)),
+        # ("x", 0, lambda stack, **kwargs: kwargs.get("x", 0.0)),
+        # ("y", 0, lambda stack, **kwargs: kwargs.get("y", 0.0)),
+        # ("dx", 1, lambda stack, **kwargs: kwargs.get("dx_func", lambda z: z)(stack[-1])),
+        # ("dy", 1, lambda stack, **kwargs: kwargs.get("dy_func", lambda z: z)(stack[-1])),
+        ("lap", 1, lambda stack, **kwargs: kwargs.get("lap_func", lambda z: z)(stack[-1])),
+        # ("invlap", 1, lambda stack, **kwargs: kwargs.get("invlap_func", lambda z: z)(stack[-1])),
+        # ("sqrt", 1, lambda stack, **kwargs: norm(stack[-1], lambda y: torch.sqrt(torch.abs(y)))),
+        # ("cos", 1, lambda stack, **kwargs: norm(stack[-1], torch.cos)),
+        # ("sin", 1, lambda stack, **kwargs: norm(stack[-1], torch.sin)),
+        # ("square", 1, lambda stack, **kwargs: norm(stack[-1], lambda y: y ** 2)),
+        # ("cube", 1, lambda stack, **kwargs: norm(stack[-1], lambda y: y ** 3)),
+        # ("+", 2, lambda stack, **kwargs: stack[-1] + stack[-2]),
+        # ("-", 2, lambda stack, **kwargs: stack[-1] - stack[-2]),
+        # ("*", 2, lambda stack, **kwargs: stack[-1] * stack[-2]),
+        # ("jacobian", 2, lambda stack, **kwargs: kwargs.get("jac_func", lambda a, b: a * b)(stack[-1], stack[-2])),
+        # ("neg", 1, lambda stack, **kwargs: -stack[-1]),
     ]
 
+    tokens = [make_static_token(name, arity, func) for name, arity, func in token_specs]
+    return Vocab(tokens=tokens, **_kwargs)
 
-    tokens = [Token(name, arity) for name, arity in token_specs]
-    return Vocab(tokens=tokens, rules=reduction_rules)
 
 class _NoParams:
     """Empty ``pde_params`` — the compiler only reads scalar constants off it."""
-
     def items(self):
         return []
 
-
-# TODO define base class for this
 class Evaluator:
-    """Callable ``_eval`` backed by the ``qg`` spectral solver.
+    """Callable ``_eval`` backed by the ``qg`` spectral solver."""
 
-    Compiles each RPN string and evaluates it on a fixed QG state, returning a
-    stacked ``(batch, Ny, Nx)`` tensor of physical fields — the semantic value
-    the tokenizer's metric would be computed over.
-    """
+    """A-priori one-step, only eval RHS"""
 
-    def __init__(self, seed: int = 42, batch=2, **kwargs):
+    def __init__(self, seed: int = 42, device='cpu', **kwargs):
         torch.manual_seed(seed)
-        self.grid = CartesianGrid(Nx=grid_size, Ny=grid_size, device=torch.device("cpu"), precision='float64')
+        grid_size = kwargs.get('grid', (1, 1, 64, 64))[-1] # ASSUME square
+
+        self.device = device
+        self.grid = CartesianGrid(Nx=grid_size, Ny=grid_size, device=torch.device(self.device), precision='float64')
         self.derivative = Derivative(self.grid)
         self.compiler = RPNCompiler(self.derivative, _NoParams())
 
-        self.batch = batch
+        self.batch = kwargs.get('grid', (1,1,64,64))[0]
         self.steps = kwargs.get('eval_steps', 1)
-
-        grid_size = kwargs.get('grid_size', 64)
 
         self.base_pde = kwargs.get('base_PDE', '0.0')
         self.target_pde = kwargs.get('PDE', None)
@@ -232,13 +198,11 @@ class Evaluator:
             raise ValueError('PDE not found')
 
         self.target_pde = self.base_pde + ' ' + self.target_pde + ' +'
-
-        self.eval_scale = 0.001 # equal to dt since we don't integrate yet
-
+        self.dt = 1.0 
+        
         print(f"Target PDE: {self.target_pde}")
 
-        self.param = OmegaConf.create(
-            {
+        self.param = OmegaConf.create({
             "grid": {
                 "Nx": grid_size,
                 "Ny": grid_size,
@@ -247,106 +211,75 @@ class Evaluator:
                 "precision": "float64",
                 "device": "cpu"
             },
-            "time": {
-                "dt": 0.001,
-                "T": 0.001,
-                "save_rate": 1000
-            },
-            "integrator": {
-                "lms": "AB2",
-                "ex": "Euler",
-                "imex": "CN2",
-                "split_bc": False
-            },
+            "time": {"dt": 0.01, "T": 0.001, "save_rate": 1000},
+            "integrator": {"lms": "AB2", "ex": "Euler", "imex": "CN2", "split_bc": False},
             "pde": {
-                "mu": 0.0,
-                "nu": 1.025e-04,
-                "B": 0.0,
-                "nv": 1.0,
-                "penalty": 0.0,
-                "friction": None,
-                "rossby_radius": None,
-                "closure_function": None,
-                "closure": 0.0,
-                "width": None,
+                "mu": 0.0, "nu": 1.025e-04, "B": 0.0, "nv": 1.0,
+                "penalty": 0.0, "friction": None, "rossby_radius": None,
+                "closure_function": None, "closure": 0.0, "width": None,
                 "rpn": self.target_pde
             },
             "ic": {
-                "function": "randn",
-                "energy": 0.01,
-                "wavenumbers": [10.0, 32.0],
-                "seed": seed,
-                "n_batch": batch
+                "function": "randn", "energy": 0.01,
+                "wavenumbers": [10.0, 32.0], "seed": seed, "n_batch": self.batch
             },
             "bc": {
-                "function": "periodic",
-                "inlet_velocity": 0.0,
-                "width": 0.05,
-                "_min": 0.0,
-                "_max": 1.0,
-                "sponge": 0.0
+                "function": "periodic", "inlet_velocity": 0.0,
+                "width": 0.05, "_min": 0.0, "_max": 1.0, "sponge": 0.0
             },
-            "flow": None,
-            "forcing": None,
-            "mask": None,
-            "fps": 20,
-            "profile": False
+            "flow": None, "forcing": None, "mask": None, "fps": 20, "profile": False
         })
 
         from qg.solver.qg import QG
-        self.solver = QG(
-            self.param
+        self.solver = QG(self.param)
+        self.random_state()
+        
+        # --- Precompute fixed grid fields ---
+        y, x = torch.meshgrid(
+            torch.linspace(0, self.param.grid.Ly, self.grid.Ny, device=self.grid.device),
+            torch.linspace(0, self.param.grid.Lx, self.grid.Nx, device=self.grid.device),
+            indexing='ij'
         )
+        self.x = x[None,None,...].expand(self.batch, -1, -1, -1)
+        self.y = y[None,None,...].expand(self.batch, -1, -1, -1)
+
+        # --- Precompute fixed state fields ---
+        state = self.construct_state()
+        self.q = self.q_phys.detach().clone()
+        self.psi = to_physical(self.derivative.inv_laplacian * (state.qh))
+        self.u = to_physical(-self.derivative.dy * (self.derivative.inv_laplacian * (state.qh)))
+        self.v = to_physical(self.derivative.dx * (self.derivative.inv_laplacian * (state.qh)))
+
+        # --- Precompute operators ---
+        dx_scale = self.param.grid.Lx / self.param.grid.Nx
+        dy_scale = self.param.grid.Ly / self.param.grid.Ny
+        d2_scale = dx_scale**2 + dy_scale**2
+        
+        print(d2_scale)
+
+        self.dx_func = lambda z: to_physical(self.derivative.dx * (to_spectral(z)))
+        self.dy_func = lambda z: to_physical(self.derivative.dy * (to_spectral(z)))
+        self.lap_func = lambda z: to_physical(self.derivative.laplacian * (to_spectral(z)))
+        self.invlap_func = lambda z: to_physical(self.derivative.inv_laplacian * (to_spectral(z)))
+        # self.jac_func = lambda a, b: to_physical(self.derivative.jacobian(to_spectral(a), to_spectral(b)))
+
+        # --- precompute a-priori step with Euler
+        self._base_step = self.eval_one(self.base_pde)
+        self._target = self.q + self.dt * self.eval_one(self.target_pde)
+        self._base = self.q + self.dt * self._base_step
 
     def random_state(self):
         self.q_phys = 4 * torch.rand(self.batch, self.grid.Ny, self.grid.Nx) - 2
-        # run QG for a bit
         self.q_phys = self.solver.nn_step(self.q_phys, n_steps=10000, dt=0.01)[:,0]
-
         self.norm = torch.linalg.norm(self.q_phys[0])
         
-        import matplotlib.pyplot as plt
-        plt.imshow(self.q_phys[0,0].detach().cpu().numpy())
-        plt.savefig("initial_condition.png")
-        plt.close()
-    
     def construct_state(self):
         return _state(
             qh=self.derivative.dealias(to_spectral(self.q_phys)),
             dt=self.param.time.dt,
             derivative=self.derivative,
         )
-        
-        # try:
-        #     self.solver.param.pde.rpn = rpn
-        #     self.solver.implicit_linear_operator = ImplicitLinearOperator(
-        #         self.grid, self.derivative, self.solver.param.pde
-        #     )
-        #     self.solver.operator = define_explicit_operator(
-        #         self.solver.param, self.grid, self.derivative, logging.getLogger("qg"),
-        #         args=(self.param.time.dt, self.grid, self.derivative, self.solver.param.pde),
-        #         sources=[]
-        #     )
 
-        #     self.solver.int = Integrator(self.solver.param.integrator) # reset AB2 histories
-
-        #     state = self.construct_state()
-        #     for _ in range(self.steps):
-        #         self.solver.step(state)
-
-        #     val = to_physical(state.qh)
-        #     if val.dim() == 4:
-        #         val = val.squeeze()
-                
-        #     return val
-        # except Exception as e:
-        #     traceback.print_exc()
-        #     print(e)
-        #     return torch.zeros((self.batch, self.grid.Ny, self.grid.Nx), device=self.state.qh.device)
-
-
-
-    #### one-step eval, old
     def eval_one(self, rpn: str) -> torch.Tensor:
         state = self.construct_state()
         try:
@@ -357,44 +290,85 @@ class Evaluator:
             if compiled.nonlinear_source is not None:
                 field_h = field_h + compiled.nonlinear_source(state)
 
-            # val = torch.view_as_real(field_h)
-            field_h[...,0,0] = 0.0 # toss zeroth mode since lost in invlap.
+            # field_h[...,0,0] = 0.0 # toss zeroth mode
 
             val = to_physical(self.derivative.dealias(field_h))
-            if val.dim() >= 4:
-                val = val.squeeze()
+            # if val.dim() >= 4:
+            #     val = val.squeeze()
             
-            # val is output
-
-            # we want sobolev norm:
-            # gxy = torch.gradient(val, dim=(-2, -1))
-            # out = torch.stack([val, *gxy], dim=-1)
-            out = val
-
-            return out
-
-
-            # return 1e-3 * val + to_physical(state.qh) # euler
+            return val
         except Exception as e:
-            traceback.print_exc()
-            print(e)
-            return torch.ones((self.batch, self.grid.Ny, self.grid.Nx), device=state.qh.device) * 1e9
+            raise ValueError("Check PDE input...")
+            # traceback.print_exc()
+            # print(e)
+            # return torch.zeros((self.batch, 1, self.grid.Ny, self.grid.Nx), device=state.qh.device)
 
-
+    @property
     def target(self) -> torch.Tensor:
-        """
-        define a simple PDE-target to prove that we can find one.
-        """
-        return self.eval_one(self.target_pde)
+        return self._target
 
-    def estimate(self, rpn: str):
-        rpn = self.base_pde + ' ' + rpn + ' +' # add base pde
-        return self.eval_one(rpn)
+    def __call__(self, closure, **kwargs):
+        # Evaluate closure with precomputed state and operators
+        dqdt = self._base_step + closure(q=self.q, psi=self.psi, u=self.u, v=self.v, 
+                       x=self.x, y=self.y, 
+                       dx_func=self.dx_func, dy_func=self.dy_func,
+                       lap_func=self.lap_func, invlap_func=self.invlap_func, **kwargs)
 
-    def to_latex(self, rpn: str) -> str:
-        return rpn_to_latex(rpn)
+        return self.q + self.dt * dqdt # euler step
 
-    def __call__(self, strings: List[str]) -> torch.Tensor:
-        # self.random_state()
-        return torch.stack([self.eval_one(s) for s in strings], dim=0)
+    def metric(self, y_hat, y):
+        # print(y_hat.shape, y.shape)
+        # y_hatn = y_hat / torch.mean(y_hat.abs())
+        # yn = y / torch.mean(y.abs())
+        # mse = F.mse_loss(y_hatn, yn)
+        #/ (torch.var(y, unbiased=False) + 1e-14)
 
+
+        mse = F.mse_loss(y_hat, y) 
+        return mse
+
+    def plot(self, y_hat_hard, y_hat_soft, y, iter):
+        from jpcm import draw
+        from matplotlib import pyplot as plt
+        fig, axs = plt.subplots(2, 4, figsize=(20, 10))
+        
+        im0 = axs[0,0].imshow(self._base.detach().cpu()[0,0], cmap=draw.cmap)
+        axs[0,0].set_title("Base ω (ULES)")
+        fig.colorbar(im0, ax=axs[0,0])
+
+        im1 = axs[0,1].imshow(y_hat_soft.detach().cpu()[0,0], cmap=draw.cmap)
+        axs[0,1].set_title("soft closed ω (LES)")
+        fig.colorbar(im1, ax=axs[0,1])
+        
+        im2 = axs[0,2].imshow(y_hat_hard.detach().cpu()[0,0], cmap=draw.cmap)
+        axs[0,2].set_title("hard closed ω (LES)")
+        fig.colorbar(im2, ax=axs[0,2])
+        
+        im3 = axs[0,3].imshow(y.detach().cpu()[0,0], cmap=draw.cmap)
+        axs[0,3].set_title("DNS ω")
+        fig.colorbar(im3, ax=axs[0,3])
+        
+        # im0 = axs[1,0].imshow(self.q.detach().cpu()[0,0], cmap=draw.cmap)
+        # axs[1,0].set_title("vorticity (state)")
+        # fig.colorbar(im0, ax=axs[1,0])
+        
+        im4 = axs[1,0].imshow((y - self._base).cpu()[0,0], cmap=draw.cmap)
+        axs[1,0].set_title("y - base")
+        fig.colorbar(im4, ax=axs[1,0])
+
+        im5 = axs[1,1].imshow((y_hat_soft - self._base).detach().cpu()[0,0], cmap=draw.cmap)
+        axs[1,1].set_title("soft closure only (signal)")
+        fig.colorbar(im5, ax=axs[1,1])
+        
+        im6 = axs[1,2].imshow((y_hat_hard - self._base).detach().cpu()[0,0], cmap=draw.cmap)
+        axs[1,2].set_title("hard closure only (signal)")
+        fig.colorbar(im6, ax=axs[1,2])
+
+        im7 = axs[1,3].imshow((y_hat_soft - y).detach().cpu()[0,0], cmap=draw.cmap)
+        axs[1,3].set_title("soft closure err")
+        fig.colorbar(im7, ax=axs[1,3])
+
+        plt.suptitle(f'a-priori closure at it={iter} for {self.target_pde}')
+        plt.tight_layout()
+        plt.savefig(f"y_hat_{iter}.png")
+        plt.close()

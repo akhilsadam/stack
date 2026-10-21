@@ -2,7 +2,7 @@
 init: <unk>
 seed: 42
 seq_len: 12
-_iter: 6000
+_iter: 4000
 max_depth: 24
 capacity: 12
 grid: [1,120]

@@ -51,8 +51,10 @@ class Vocab:
             i: token.arity for i, token in enumerate(self.tokens)
         }
 
+        print([token.token for token in self.tokens])
         # self.pad_token_id = self.token_to_id["<unk>"]
         self._Operator = Operator(operator_bases)
+        self.shape = kwargs['grid'] # B [CHW]
 
     def __len__(self):
         return len(self.tokens)
@@ -66,7 +68,7 @@ class Vocab:
         toks = _str.split(" ")
 
         # passthrough = 1.0
-        passthrough = 0.2
+        passthrough = 0.5
         
         init_kwargs = {
             "tokens": self.tokens,
@@ -74,6 +76,9 @@ class Vocab:
             "token_id": -1,
             "token_init": None,
             "gate_init": passthrough,
+            "shape": self.shape,
+            "max_seq_len": self.seq_len,
+            "_seq_id": 0,
         }
 
         for i, s in enumerate(toks):
@@ -91,11 +96,15 @@ class Vocab:
                     "token_id": _id,
                     "token_init": t,
                     "gate_init": passthrough,
+                    "_seq_id": i,
                 },
             ))
 
         if len(toks) < self.seq_len:
-            ops.extend([self._Operator(init=init_kwargs) for _ in range(self.seq_len - len(toks))])
+            ops.extend([self._Operator(init={
+                **init_kwargs, 
+                "_seq_id": i, 
+            }) for i in range(len(toks), self.seq_len)])
 
         # print(ops[0].__dict__)
         return ops
@@ -126,7 +135,7 @@ class Stack(nn.Module):
         return scale * F.sigmoid(temp) + eps # 0.01
 
     def init_stack(self, device=None, dtype=torch.float32):
-        return torch.ones(self.capacity, dtype=dtype, device=device)
+        return torch.ones((self.capacity, *self.vocab.shape), dtype=dtype, device=device)
         # return torch.stack([torch.tensor(self.vocab.tokens[0]()(None),device=device) for i in range(self.capacity)], dim=0)
 
     def reset_accum(self):
@@ -158,31 +167,34 @@ class Stack(nn.Module):
         return stack[-1] # last element
 
     @torch.no_grad()
-    def detokenize(self, threshold = 0.95):
+    def detokenize(self, threshold = 0.05):
         tokens = []
         gates = []
         final = []
         arity = []
 
+        temp = self.T(self.temp, self.T0)
         gate_temp = self.T(self.gate_temp)
+
         for i, op in enumerate(self.ops):
-            token_id, gate = op.get_token(gate_temp)
-            tokens.append(self.vocab.id_to_token[token_id])
+            token_info, gate = op.get_tokens(temp[i], gate_temp)
+            token_ids, token_p = token_info
+            tokens.append([f"{self.vocab.id_to_token[token_id]}_{token_p[j]:.2f}" for j, token_id in enumerate(token_ids)])
             gates.append(gate)
-            if gate < threshold:
+            if gate[0] > threshold:
                 final.append(tokens[-1])
-                arity.append(self.vocab.id_to_arity[token_id])
+                arity.append([self.vocab.id_to_arity[token_id] for token_id in token_ids])
 
         return '\n'*2 + '\t' +\
-         '\n\t'.join([" ".join(tokens), 
-                     ' '.join([f'{g.item():.2f}' for g in gates]), 
-                     " ".join(final).strip()]) + \
+         '\n\t'.join([" ".join([str(token) for token in tokens]), 
+                     ' '.join([f'{g[0]:.2f}' for g in gates]), 
+                     " ".join([str(token) for token in final]).strip()]) + \
          '\n'*2
 
             
     
-    def _train(self, _eval):
-        opt = torch.optim.Adam(self.parameters(), lr=1e-2)
+    def _train(self, _eval, lr=1e-2, **kwargs):
+        opt = create_optimizer(self, torch.optim.Adam, lr)
         for i in range(self._iter):
             opt.zero_grad()
 
@@ -225,7 +237,8 @@ class Stack(nn.Module):
             converged = (loss_target < 1e-6) or (i > (self._iter*0.5))
 
             b = 1e-1 if converged else 1e-4
-            loss = loss_target + b * loss_entropy + 1e-4 * loss_temp + 1e-4 * loss_gate
+            c = 1e-4 if converged else 0
+            loss = loss_target + b * loss_entropy + c * loss_temp + 1e-4 * loss_gate
 
 
             loss.backward()
@@ -234,7 +247,7 @@ class Stack(nn.Module):
             if i % 100 == 0 or i==self._iter-1:
                 z_hat_hard = _eval(self.forward, _eval=True)
                 loss_hard = _eval.metric(z_hat_hard, _eval.target)
-                losses = f"\n loss_final: {loss_hard.item():.2e}, loss_target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}"
+                losses = f"\n loss_final: {loss_hard.item():.2e}, loss_target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}\nloss_relmse_soft: {(loss_target.item()/(torch.var(_eval.target) + 1e-14)):.2e}"
                 logger.info(f"\nIteration {i}: {self.detokenize()} {losses}")
                 _eval.plot(z_hat_hard.detach(), z_hat.detach(), _eval.target, i)
             

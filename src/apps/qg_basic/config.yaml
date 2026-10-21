@@ -1,10 +1,11 @@
 base_PDE: q psi jacobian neg
-PDE: q lap x 0.000125 * 0.0005 + * 
-PDE_init: q 
+PDE: q lap 0.005 * 
+init: <unk>
 eval_steps: 4
-grid_size: 64
+grid: [1, 1, 64, 64]
 seed: 42
-seq_len: 12
+seq_len: 2
+lr: 0.25
 
 ## max seq len 12
 # PDE: q psi jacobian neg q lap 0.01 x * * + 
