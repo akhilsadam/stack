@@ -69,3 +69,8 @@ class PostAffine(nn.Module):
 
         # self.preprocess = _Affine()
         # self.postprocess = lambda x, *args: x
+
+class Identity(nn.Module):
+    def __init__(self):
+        self.preprocess = lambda x, *args: x
+        self.postprocess = lambda x, *args: x

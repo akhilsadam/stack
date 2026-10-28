@@ -4,7 +4,7 @@ init: <unk>
 eval_steps: 4
 grid: [1, 1, 64, 64]
 seed: 42
-seq_len: 2
+seq_len: 4
 lr: 0.25
 
 ## max seq len 12

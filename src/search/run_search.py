@@ -17,10 +17,11 @@ from space.tokenizer import Stack, Operator
 
 # app = "equation_v0_composition" # not great, stuck easily
 # app = "equation_v1_scalar" # works okay
-app = "equation_v1a_scalar" # works okay
+# app = "equation_v1a_scalar" # fails init
 # app = "equation_v2_branched" # + (fails)
 # app = "equation_v3_branched" # * (fails)
-# app = "qg_basic"
+app = "qg_basic"
+# app = "qg_apost"
 
 
 import importlib.util
@@ -54,7 +55,7 @@ def main():
     )
 
     tokenizer = tokenizer.to(device)
-    tokenizer._train(Evaluator(**cfg))
+    tokenizer._train(Evaluator(**cfg), **cfg)
 
     # # ── search ─────────────────────────────────────────────────────
     # init_rpn   = cfg.get("PDE_init", cfg["PDE"])

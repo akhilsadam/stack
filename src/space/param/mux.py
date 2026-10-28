@@ -75,52 +75,111 @@ class SigmoidMux(nn.Module):
         return ids.tolist(), p[ids]
 
 
-class TernaryMux(nn.Module):
+
+class TernaryMux(nn.Module): # 
     def __init__(self):
 
-        self.term_logits = nn.Parameter(0.1 * (torch.rand(self.n) - 0.5))
-        self.weights = nn.Parameter(0.1 * (torch.rand(self.n) - 0.5))
+        self.term_logits = nn.Parameter(torch.zeros(self.n))
+        self.weights = nn.Parameter(torch.ones(self.n) * 0.1) 
 
-        if self.token_id >= 0: 
-            self.term_logits.data.fill_(0.0)
-            self.term_logits.data[self.token_id] = 1.0
+        # if self.token_id >= 0: 
+        #     self.term_logits.data.fill_(0.0)
+        #     self.term_logits.data[self.token_id] = 1.0
 
-        # self.term_logits.scaling_factor = (1/6) * self.m * self.L
+        # self.weights.scaling_factor = self.m
 
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
 
-    def quantize(self, w):
+    def quantize(self, w, p):
         # https://arxiv.org/pdf/2402.17764
-        # BitNet b1.58
-        y = w.abs().mean()
-        w_q = torch.round(w / (y + 1e-10))
-        w_q = torch.clamp(w_q, -1.0, 1.0)
+        # (mod) BitNet b1.58
+        y = min(w.abs().mean(), 1e-8)
+        w_q = w / y
+        w_q = w_q + p * (torch.round(w_q) - w_q).detach()
+        w_q = w_q * y
+        # w_q = torch.clamp(w_q, -1.0, 1.0)
+
         return w_q
 
     def p(self, temp):
-        logits = self.term_logits * 0.001
-        logits = logits / temp
-        p = torch.sigmoid(logits)
-        # p = p / p.sum()
+        # logits = self.term_logits * 0.001
+        # logits = logits / temp
 
-        hp = torch.sigmoid(logits / 1e-5)
-        # hp = hp / hp.sum()
- 
-        entropy = self.term_entropy(p) #+ self.term_entropy(sign_p)
-        q = self.quantize(self.weights)
+        # p = torch.sigmoid(1/temp - 10) # not bad, but quant can get noisy
+        # q = self.weights * p + self.quantize(self.weights) * (1 - p)
 
-        a = p * q
-        ha = hp * q
 
+        # p = torch.sigmoid(1 / temp - 10)
+        # q = self.quantize(self.weights, p)
+
+        p = torch.sigmoid(self.term_logits / temp - 10)
+        q = self.quantize(self.weights, p)
+
+        # a = p * q
+
+        # hp = torch.sigmoid(logits / 1e-5)
+        # ha = hp * q
+
+        a = q
+        ha = q
+
+        entropy = 0.0 #self.term_entropy(a.abs())
         return a, ha, entropy
 
     def channel_ids(self, *args, **kwargs):
         cache_mag = kwargs.get('cache_mag', 1.0)
         temp = kwargs.get('temp', 1.0)
-        p = torch.sigmoid(self.term_logits * 0.001 / temp) * (cache_mag > 0.01)
-        ids = torch.where(p > 0.1)[0]
+        p = self.quantize(self.weights, 0.0).abs() * (cache_mag > 0.01)
+        # print("token_p", p, self.term_logits)
+        ids = torch.where(p > 1e-6)[0]
         return ids.tolist(), p[ids]
+
+
+# class TernaryMux(nn.Module): # WORKS! but messy parametrization [UPDATE: depends on weight init, so not great; weights can get stuck]
+#     def __init__(self):
+
+#         self.term_logits = nn.Parameter(0.1 * (torch.rand(self.n) - 0.5))
+#         self.weights = nn.Parameter(0.1 * (torch.rand(self.n) - 0.5)) # works might be special case, somehow this learns???
+#         # self.weights = nn.Parameter(1e-5 * torch.randn(self.n)) # ones, zeros fails, not great...
+
+#         if self.token_id >= 0: 
+#             self.term_logits.data.fill_(0.0)
+#             self.term_logits.data[self.token_id] = 1.0
+
+#         # self.term_logits.scaling_factor = (1/6) * self.m * self.L
+
+#     def term_entropy(self, p):
+#         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
+
+#     def quantize(self, w):
+#         # https://arxiv.org/pdf/2402.17764
+#         # (exactly as in) BitNet b1.58
+#         y = w.abs().mean()
+#         w_q = torch.round(w / (y + 1e-10))
+#         w_q = torch.clamp(w_q, -1.0, 1.0)
+#         return w_q
+
+#     def p(self, temp):
+#         logits = self.term_logits * 0.001
+#         logits = logits / temp
+#         p = torch.sigmoid(logits)
+#         q = self.quantize(self.weights)
+#         a = p * q
+
+#         hp = torch.sigmoid(logits / 1e-5)
+#         ha = hp * q
+
+#         entropy = self.term_entropy(a.abs())
+#         return a, ha, entropy
+
+#     def channel_ids(self, *args, **kwargs):
+#         cache_mag = kwargs.get('cache_mag', 1.0)
+#         temp = kwargs.get('temp', 1.0)
+#         p = torch.sigmoid(self.term_logits * 0.001 / temp) * self.quantize(self.weights).abs() * (cache_mag > 0.01)
+#         # print("token_p", p, self.term_logits)
+#         ids = torch.where(p > 0.1)[0]
+#         return ids.tolist(), p[ids]
 
 
 # class TernaryMux(nn.Module):

@@ -108,7 +108,7 @@ class OpStack(nn.Module):
         p, hp, term_entropy = self.p(temp)
         a, gate_entropy = self.gate(gate_temp)
 
-        print(p, self.cache_mag)
+        # print('PC', p, self.cache_mag)
 
         memory = self._STE_select(p, hp, memory, hardness) # select from memory
         working_set = self._STE_select(p, hp, working_set, hardness) # select from working set
