@@ -41,3 +41,23 @@ class SoftmaxGate(nn.Module):
 
     def gate_info(self, gate_temp=1.0):
         return F.softmax(self.gate_logits / gate_temp, dim=0)
+
+class SimpleGate(nn.Module):
+    def __init__(self):
+        init = torch.tensor(self.gate_init)
+        init = (init + 0.1 * torch.rand_like(init)) / self.L
+        self.gate_logit = nn.Parameter(init)
+
+    def gate(self, temp):
+        a = self.gate_logit
+        qa = torch.clamp(F.relu(self.gate_logit), 0, 1)
+        a = a + (qa - a).detach()
+        # torch.sigmoid(self.gate_logit / temp)
+        # a = 0.5 + 0 * a
+        return a, -(a * torch.log(a + eps) + (1-a) * torch.log(1-a + eps))
+
+    def apply_gate(self, a, value, skip):
+        return a * value + (1-a) * skip
+
+    def gate_info(self, gate_temp=1.0):
+        return [torch.sigmoid(self.gate_logit / gate_temp),]

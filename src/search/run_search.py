@@ -20,7 +20,8 @@ from space.tokenizer import Stack, Operator
 # app = "equation_v1a_scalar" # fails init
 # app = "equation_v2_branched" # + (fails)
 # app = "equation_v3_branched" # * (fails)
-app = "qg_basic"
+# app = "qg_basic"
+app = "qg_apriori"
 # app = "qg_apost"
 
 

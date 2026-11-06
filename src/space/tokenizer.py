@@ -178,8 +178,8 @@ class Stack(nn.Module):
 
         for i, op in enumerate(self.ops):
             token_info, gate = op.get_tokens(temp[i], gate_temp)
-            token_ids, token_p = token_info
-            tokens.append([f"{self.vocab.id_to_token[token_id]}_{token_p[j]:.2f}" for j, token_id in enumerate(token_ids)])
+            token_ids, token_p, token_a = token_info
+            tokens.append([f"{self.vocab.id_to_token[token_id]}_{token_a[j]:.2f}@{token_p[j]:.2f}" for j, token_id in enumerate(token_ids)])
             gates.append(gate)
             if gate[0] > threshold:
                 final.append(tokens[-1])

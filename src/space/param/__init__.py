@@ -19,15 +19,22 @@ class OpParamV1(SigmoidMux, PostAffine, SigmoidGate):
         PostAffine.__init__(self) # affine layer, after muxing
         SigmoidGate.__init__(self) # gate parameters
 
-class OpParamV2(TernaryMux, Identity, SigmoidGate):
+class OpParamV2(TernaryMuxV3, PostAffine, SigmoidGate):
     def __init__(self):
         # TernaryMux.__init__(self) # muxing parameters
         # PostAffine.__init__(self, aff=AffineReLU) # affine layer, after muxing
 
-        TernaryMux.__init__(self) # muxing parameters
+        TernaryMuxV3.__init__(self) # muxing parameters
         PostAffine.__init__(self) # affine layer, after muxing
         SigmoidGate.__init__(self) # gate parameters
 
         # TernaryMux.__init__(self) # muxing parameters
         # Identity.__init__(self) # (no) affine layer, after muxing
         # SigmoidGate.__init__(self) # gate parameters
+
+
+class OpParamV3(TernaryMuxV4, Identity, SimpleGate):
+    def __init__(self):
+        TernaryMuxV4.__init__(self) # muxing parameters
+        Identity.__init__(self) # blank
+        SimpleGate.__init__(self) # gate parameters

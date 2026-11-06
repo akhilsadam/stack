@@ -72,21 +72,51 @@ class SigmoidMux(nn.Module):
         logits_valid = self.term_logits * 0.001
         p = torch.sigmoid(logits_valid / temp)
         ids = torch.where(p > 0.1)[0]
-        return ids.tolist(), p[ids]
+        return ids.tolist(), p[ids], 1.0 + 0.0 * p[ids]
 
+class TernaryMuxV4(nn.Module): # 
+    def __init__(self):
 
+        # self.term_logits = nn.Parameter(torch.zeros(self.n))
+        self.weights = nn.Parameter(torch.ones(self.n) * 0.01) 
 
-class TernaryMux(nn.Module): # 
+    def term_entropy(self, p):
+        return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
+
+    def quantize(self, w):
+        # https://arxiv.org/pdf/2402.17764
+        # (mod) BitNet b1.58
+        y = w.abs().mean()
+        w_q = w / (y + 1e-8)
+        # w_q = w_q + p * (torch.round(w_q) - w_q).detach()
+        w_q = torch.round(w_q)
+        w_q = torch.clamp(w_q, -1.0, 1.0)
+        # w_q = w_q + p * (torch.clamp(w_q, -1.0, 1.0) - w_q).detach()
+
+        return w_q
+
+    def p(self, temp):
+
+        a = self.weights
+        ha = self.weights
+        # q = self.quantize(self.weights)
+
+        entropy = 0.0 #self.term_entropy(q.abs())
+        return a, ha, entropy
+
+    def channel_ids(self, *args, **kwargs):
+        cache_mag = kwargs.get('cache_mag', 1.0)
+        temp = kwargs.get('temp', 1.0)
+        p = self.quantize(self.weights).abs() * (cache_mag > 0.01)
+        # print("token_p", p, self.term_logits)
+        ids = torch.where(p > 1e-6)[0]
+        return ids.tolist(), p[ids], self.weights[ids]
+
+class TernaryMuxV3(nn.Module): # 
     def __init__(self):
 
         self.term_logits = nn.Parameter(torch.zeros(self.n))
         self.weights = nn.Parameter(torch.ones(self.n) * 0.1) 
-
-        # if self.token_id >= 0: 
-        #     self.term_logits.data.fill_(0.0)
-        #     self.term_logits.data[self.token_id] = 1.0
-
-        # self.weights.scaling_factor = self.m
 
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
@@ -98,12 +128,31 @@ class TernaryMux(nn.Module): #
         w_q = w / y
         w_q = w_q + p * (torch.round(w_q) - w_q).detach()
         w_q = w_q * y
-        # w_q = torch.clamp(w_q, -1.0, 1.0)
+        w_q = w_q + p * (torch.clamp(w_q, -1.0, 1.0) - w_q).detach()
 
         return w_q
 
     def p(self, temp):
-        # logits = self.term_logits * 0.001
+        p = torch.sigmoid(self.term_logits * 0.001 / temp - 10)
+        q = self.quantize(self.weights, p)
+
+        a = q
+        ha = q
+
+        entropy = 0.0 # (1-p).sum() # 0.0 #self.term_entropy(a.abs())
+        return a, ha, entropy
+
+    def channel_ids(self, *args, **kwargs):
+        cache_mag = kwargs.get('cache_mag', 1.0)
+        temp = kwargs.get('temp', 1.0)
+        w = self.quantize(self.weights, 0.0)
+        p = w.abs() * (cache_mag > 0.01)
+        # print("token_p", p, self.term_logits)
+        ids = torch.where(p > 1e-6)[0]
+        return ids.tolist(), 1.0 + 0.0 * p[ids], w[ids]
+
+
+      # logits = self.term_logits * 0.001
         # logits = logits / temp
 
         # p = torch.sigmoid(1/temp - 10) # not bad, but quant can get noisy
@@ -112,29 +161,6 @@ class TernaryMux(nn.Module): #
 
         # p = torch.sigmoid(1 / temp - 10)
         # q = self.quantize(self.weights, p)
-
-        p = torch.sigmoid(self.term_logits / temp - 10)
-        q = self.quantize(self.weights, p)
-
-        # a = p * q
-
-        # hp = torch.sigmoid(logits / 1e-5)
-        # ha = hp * q
-
-        a = q
-        ha = q
-
-        entropy = 0.0 #self.term_entropy(a.abs())
-        return a, ha, entropy
-
-    def channel_ids(self, *args, **kwargs):
-        cache_mag = kwargs.get('cache_mag', 1.0)
-        temp = kwargs.get('temp', 1.0)
-        p = self.quantize(self.weights, 0.0).abs() * (cache_mag > 0.01)
-        # print("token_p", p, self.term_logits)
-        ids = torch.where(p > 1e-6)[0]
-        return ids.tolist(), p[ids]
-
 
 # class TernaryMux(nn.Module): # WORKS! but messy parametrization [UPDATE: depends on weight init, so not great; weights can get stuck]
 #     def __init__(self):

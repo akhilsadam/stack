@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from .util import *
 from .token import Token
-from .param import OpParamV2 as OpParam
+from .param import OpParamV3 as OpParam
 
 @dataclass(eq=False)
 class OpArg:
