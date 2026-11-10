@@ -119,7 +119,8 @@ class Stack(nn.Module):
         )
 
         self.capacity = kwargs.get("capacity", 4)
-        self.stack = self.init_stack()
+        # self.stack = self.init_stack
+        self.register_buffer('stack', torch.ones((self.capacity, *self.vocab.shape)))
 
         self.T0 = T0
         self.temp = nn.Parameter(torch.ones(self.vocab.seq_len))
@@ -134,9 +135,9 @@ class Stack(nn.Module):
     def T(self, temp, scale=1.0):
         return scale * F.sigmoid(temp) + eps # 0.01
 
-    def init_stack(self, device=None, dtype=torch.float32):
-        return torch.ones((self.capacity, *self.vocab.shape), dtype=dtype, device=device)
-        # return torch.stack([torch.tensor(self.vocab.tokens[0]()(None),device=device) for i in range(self.capacity)], dim=0)
+    # def init_stack(self, device=None, dtype=torch.float32):
+    #     return torch.ones((self.capacity, *self.vocab.shape), dtype=dtype, device=device)
+    #     # return torch.stack([torch.tensor(self.vocab.tokens[0]()(None),device=device) for i in range(self.capacity)], dim=0)
 
     def reset_accum(self):
         self._term_entropy = torch.tensor(0.0)
@@ -234,9 +235,17 @@ class Stack(nn.Module):
             # else:
             #     self.gate_temp.requires_grad_(True)
 
-            converged = (loss_target < 1e-6) or (i > (self._iter*0.5))
 
-            b = 1e-1 if converged else 1e-4
+            ### default
+            # converged = (loss_target < 1e-6) or (i > (self._iter*0.5))
+
+            # b = 1e-1 if converged else 1e-4
+            # c = 1e-4 if converged else 0
+            # loss = loss_target + b * loss_entropy + c * loss_temp + 1e-4 * loss_gate
+
+            ### NEW
+            converged = (loss_target < 1e-6)
+            b = 1e-1 if converged else 0
             c = 1e-4 if converged else 0
             loss = loss_target + b * loss_entropy + c * loss_temp + 1e-4 * loss_gate
 

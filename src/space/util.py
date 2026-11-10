@@ -1,5 +1,5 @@
 
-eps = 1e-6
+eps = 1e-12
 
 def create_optimizer(model, optimizer, base_lr=1e-3):
     param_groups = {}

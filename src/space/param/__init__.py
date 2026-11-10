@@ -33,8 +33,15 @@ class OpParamV2(TernaryMuxV3, PostAffine, SigmoidGate):
         # SigmoidGate.__init__(self) # gate parameters
 
 
-class OpParamV3(TernaryMuxV4, Identity, SimpleGate):
+# class OpParamV3(TernaryMuxV4, Identity, SigmoidGate):
+# class OpParamV3(TernaryMuxV4, PostAffine, SigmoidGateClamp):
+class OpParamV3(TernaryMuxV4, PostAffine, SimpleGateClamp):
+# class OpParamV3(TernaryMuxV4, Identity, SimpleGateClamp):
+
+
     def __init__(self):
         TernaryMuxV4.__init__(self) # muxing parameters
-        Identity.__init__(self) # blank
-        SimpleGate.__init__(self) # gate parameters
+        # Identity.__init__(self) # blank
+        PostAffine.__init__(self) # blank
+        # SigmoidGateClamp.__init__(self) # gate parameters
+        SimpleGateClamp.__init__(self) # gate parameters

@@ -1,5 +1,5 @@
 base_PDE: q psi jacobian neg
-PDE: q lap 0.0005 *
+PDE: q lap 0.005 *
 init: <unk>
 eval_steps: 4
 grid: [1, 1, 64, 64]

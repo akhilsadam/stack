@@ -97,8 +97,10 @@ class TernaryMuxV4(nn.Module): #
 
     def p(self, temp):
 
-        a = self.weights
-        ha = self.weights
+        q = self.weights
+
+        a = q
+        ha = q
         # q = self.quantize(self.weights)
 
         entropy = 0.0 #self.term_entropy(q.abs())
@@ -107,9 +109,9 @@ class TernaryMuxV4(nn.Module): #
     def channel_ids(self, *args, **kwargs):
         cache_mag = kwargs.get('cache_mag', 1.0)
         temp = kwargs.get('temp', 1.0)
-        p = self.quantize(self.weights).abs() * (cache_mag > 0.01)
+        p = self.quantize(self.weights).abs() #* (cache_mag > 1e-10)
         # print("token_p", p, self.term_logits)
-        ids = torch.where(p > 1e-6)[0]
+        ids = torch.where(p < 1e30)[0]
         return ids.tolist(), p[ids], self.weights[ids]
 
 class TernaryMuxV3(nn.Module): # 
