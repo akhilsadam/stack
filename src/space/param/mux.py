@@ -83,18 +83,6 @@ class TernaryMuxV4(nn.Module): #
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
 
-    def quantize(self, w):
-        # https://arxiv.org/pdf/2402.17764
-        # (mod) BitNet b1.58
-        y = w.abs().mean()
-        w_q = w / (y + 1e-8)
-        # w_q = w_q + p * (torch.round(w_q) - w_q).detach()
-        w_q = torch.round(w_q)
-        w_q = torch.clamp(w_q, -1.0, 1.0)
-        # w_q = w_q + p * (torch.clamp(w_q, -1.0, 1.0) - w_q).detach()
-
-        return w_q
-
     def p(self, temp):
 
         q = self.weights
@@ -109,9 +97,10 @@ class TernaryMuxV4(nn.Module): #
     def channel_ids(self, *args, **kwargs):
         cache_mag = kwargs.get('cache_mag', 1.0)
         temp = kwargs.get('temp', 1.0)
-        p = self.quantize(self.weights).abs() #* (cache_mag > 1e-10)
+        p = self.weights.abs() * (cache_mag > 1e-10)
         # print("token_p", p, self.term_logits)
-        ids = torch.where(p < 1e30)[0]
+
+        ids = torch.where(p > 1e-6)[0]
         return ids.tolist(), p[ids], self.weights[ids]
 
 class TernaryMuxV3(nn.Module): # 
