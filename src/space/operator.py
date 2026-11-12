@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from .util import *
 from .token import Token
 from .param import OpParamV3 as OpParam
+from .report import OpReport
 
 @dataclass(eq=False)
 class OpArg:
@@ -124,6 +125,14 @@ class OpStack(nn.Module):
         
     def get_tokens(self, temp=1.0, gate_temp=1.0):
         return self.channel_ids(cache_mag = self.cache_mag, temp=temp), self.gate_info(gate_temp)
+
+    def report(self, temp=1.0, gate_temp=1.0):
+        """Structured description of what this op is doing right now."""
+        return OpReport(
+            index=-1,
+            mux=self.channel_report(cache_mag=getattr(self, 'cache_mag', None), temp=temp),
+            gate=self.gate_report(gate_temp),
+        )
 
 def Operator(operator_bases):
     class OperatorTemplate(OpArg, *operator_bases, OpStack):

@@ -25,7 +25,7 @@ class Token(nn.Module):
 
 def make_static_token(name, _arity, func):
     class StaticToken(Token):
-        token = name.strip().lower()
+        token = name.strip()
         arity = _arity
         def __init__(self):
             super().__init__()

@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 from .util import *
 from .token import *
 from .operator import *
+from .report import render_op, render_gate, plot_stack
+from .diagram import Diagram, render_diagram
 
 class Vocab:
 
@@ -168,29 +170,55 @@ class Stack(nn.Module):
         return stack[-1] # last element
 
     @torch.no_grad()
-    def detokenize(self, threshold = 0.05):
-        tokens = []
-        gates = []
-        final = []
-        arity = []
+    def report(self, threshold = 0.05):
+        """Structured report of the stack: mux weights/probabilities, gates.
 
+        The list is parallel to ``self.ops``; each entry carries the mux of
+        that op (which channels are on, with what weight, with what
+        probability) and its gate.  A spatial mux plugs into this without any
+        change here -- see ``space/report.py``.
+        """
         temp = self.T(self.temp, self.T0)
         gate_temp = self.T(self.gate_temp)
 
+        reports = []
         for i, op in enumerate(self.ops):
-            token_info, gate = op.get_tokens(temp[i], gate_temp)
-            token_ids, token_p, token_a = token_info
-            tokens.append([f"{self.vocab.id_to_token[token_id]}_{token_a[j]:.2f}@{token_p[j]:.2f}" for j, token_id in enumerate(token_ids)])
-            gates.append(gate)
-            if gate[0] > threshold:
-                final.append(tokens[-1])
-                arity.append([self.vocab.id_to_arity[token_id] for token_id in token_ids])
+            r = op.report(temp=temp[i], gate_temp=gate_temp)
+            r.index = i
+            reports.append(r)
+        return reports
 
-        return '\n'*2 + '\t' +\
-         '\n\t'.join([" ".join([str(token) for token in tokens]), 
-                     ' '.join([f'{g[0]:.2f}' for g in gates]), 
-                     " ".join([str(token) for token in final]).strip()]) + \
-         '\n'*2
+    @torch.no_grad()
+    def diagram(self, threshold = 0.05):
+        """The stack, drawn as a terminal diagram.
+
+        The horizontal axis is the operand stack (top of the stack on the
+        left, as the machine reads it), the vertical axis is the ops in
+        execution order.  See ``space/diagram.py``.
+        """
+        return Diagram.from_reports(
+            self.report(threshold=threshold),
+            self.vocab.arity,
+            self.vocab.id_to_token.get,
+            self.capacity,
+        )
+
+
+
+    @torch.no_grad()
+    def detokenize(self, threshold=0.05, color=True) -> str:
+        reports = self.report(threshold=threshold)
+        name = self.vocab.id_to_token.get
+
+        diag = Diagram.from_reports(reports, self.vocab.arity, name, self.capacity)
+        picture = render_diagram(diag, threshold=threshold, color=color)
+
+        return f"\n\n{picture}\n\n"
+
+    @torch.no_grad()
+    def plot_report(self, path = None, threshold = 0.05):
+        """Plot the mux weights (and probabilities) of the whole stack."""
+        return plot_stack(self.report(threshold=threshold), self.vocab.id_to_token.get, path=path)
 
             
     

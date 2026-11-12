@@ -4,6 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from space.util import eps
+from space.report import GateReport
+
+__all__ = ["SigmoidGate", "SoftmaxGate", "SigmoidGateClamp", "SimpleGateClamp"]
 
 # v0, A/B gate during training
 class SigmoidGate(nn.Module):
@@ -23,6 +26,10 @@ class SigmoidGate(nn.Module):
     def gate_info(self, gate_temp=1.0):
         return [torch.sigmoid(self.gate_logit / gate_temp),]
 
+    def gate_report(self, gate_temp=1.0):
+        a = torch.sigmoid(self.gate_logit / gate_temp)
+        return GateReport(values=a.reshape(1), label=__class__.__name__)
+
 # v0.1 # wip, A & B during training
 class SoftmaxGate(nn.Module):
     def __init__(self):        
@@ -41,6 +48,10 @@ class SoftmaxGate(nn.Module):
 
     def gate_info(self, gate_temp=1.0):
         return F.softmax(self.gate_logits / gate_temp, dim=0)
+
+    def gate_report(self, gate_temp=1.0):
+        a = F.softmax(self.gate_logits / gate_temp, dim=0)
+        return GateReport(values=a, label=__class__.__name__)
 
 class SigmoidGateClamp(nn.Module):
     def __init__(self):
@@ -67,6 +78,10 @@ class SigmoidGateClamp(nn.Module):
 
     def gate_info(self, gate_temp=1.0):
         return [torch.sigmoid(self.gate_logit / gate_temp),]
+
+    def gate_report(self, gate_temp=1.0):
+        a = torch.sigmoid(self.gate_logit / gate_temp)
+        return GateReport(values=a.reshape(1), label=__class__.__name__)
 
 
 class SimpleGateClamp(nn.Module):
@@ -95,3 +110,10 @@ class SimpleGateClamp(nn.Module):
 
     def gate_info(self, gate_temp=1.0):
         return [torch.sigmoid(self.gate_logit / gate_temp),]
+
+    def gate_report(self, gate_temp=1.0):
+        # the forward mixes the clamped logit, not a sigmoid of it -- report
+        # the value that is actually used, otherwise the rendered program
+        # disagrees with the model's behaviour
+        a = torch.clamp(F.relu(self.gate_logit), 0, 1)
+        return GateReport(values=a.reshape(1), label=__class__.__name__)
