@@ -27,7 +27,7 @@ only has to implement `channel_report` -- the whole reporting path already
 works for it.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Callable, List, Optional, Sequence, Tuple
 
 import torch
@@ -53,7 +53,10 @@ class MuxReport:
     ids           channel (token) ids, in channel order
     weights       (K, *spatial) the mux weight of each channel.  For a signed
                   weight mux this is the parameter; for a probabilistic mux it
-                  is the (normalized) mixing coefficient.
+                  is the (normalized) mixing coefficient.  The mux reports
+                  its own weights here; the stages after it (the affine)
+                  scale them, so the *last* report of a chain holds the
+                  weights the model actually mixes with.
     probs         (K, *spatial) the probability of each channel, or None when
                   the mux has no probabilistic meaning (a plain signed weight
                   mux has none).  When it exists it is *not* required to be a
@@ -64,6 +67,8 @@ class MuxReport:
     mask          (K, *spatial) bool -- where the channel contributes at all.
                   Dead channels are dropped from `ids` by a 1D mux, so this
                   is all-True there; a 2D mux uses it to mark dead cells.
+    offset        the constant the affine adds to the op on top of the
+                  weighted mix.  None when the mux has no affine.
     """
 
     ids: List[int]
@@ -71,6 +76,7 @@ class MuxReport:
     probs: Optional[torch.Tensor] = None
     hard_weights: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None
+    offset: Optional[float] = None
     label: str = ""
 
     @property
@@ -128,11 +134,21 @@ class GateReport:
 
 @dataclass
 class OpReport:
-    """The full report of one op of the stack."""
+    """The full report of one op of the stack.
+
+    mux       the final report: the mux's weights after every stage has
+              transformed them, so it describes the op's complete operation
+    gate      how the op mixes its own value against the skip
+    stages    the whole chain, in order: the mux's own report first, then
+              one entry per stage that had something to say (the affine,
+              for one).  Each entry is the report as it stood after that
+              stage.
+    """
 
     index: int
     mux: MuxReport
     gate: GateReport
+    stages: List[MuxReport] = field(default_factory=list)
 
     @property
     def keep(self) -> float:
@@ -191,8 +207,13 @@ def select_channels(
     return ids.tolist(), w[ids], (mask[ids] if mask is not None else None)
 
 
-def format_value(value, fmt: str = "{:.3f}") -> str:
-    """Short text for a scalar or for a spatial field (then: its range)."""
+def format_value(value, fmt: str = "{:.3f}", std_fmt: str = "{:.3f}") -> str:
+    """Short text for a scalar or for a spatial field.
+
+    A field is summarised as its mean and its standard deviation -- the
+    number a reader wants ("on average this channel is worth 0.4, and it
+    varies by 0.1 across the domain"), rather than the two extremes.
+    """
     if value is None:
         return ""
     if not torch.is_tensor(value):
@@ -202,7 +223,9 @@ def format_value(value, fmt: str = "{:.3f}") -> str:
         return "-"
     if v.numel() == 1:
         return fmt.format(float(v[0]))
-    return "{}..{}".format(fmt.format(float(v.min())), fmt.format(float(v.max())))
+    mean = float(v.mean())
+    std = float(v.std(unbiased=False))
+    return "{}±{}".format(fmt.format(mean), std_fmt.format(std))
 
 
 def _same(a: Optional[torch.Tensor], b: Optional[torch.Tensor]) -> bool:
@@ -221,6 +244,11 @@ def render_mux(mux: MuxReport, name_fn: Callable[[int], str]) -> str:
         if mux.probs is not None and not _same(mux.probs, mux.weights):
             chunk += ",p={}".format(format_value(mux.probs[j]))
         parts.append(chunk)
+
+    if mux.offset is not None and abs(float(mux.offset)) > 1e-12:
+        # the affine's shift is a constant on top of the weighted mix; the
+        # diagram shows it as the channel "1", so the text does too
+        parts.append("1(w={})".format(format_value(mux.offset, "{:+.3f}")))
     return " ".join(parts)
 
 

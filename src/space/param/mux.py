@@ -6,14 +6,17 @@ import torch.nn.functional as F
 from space.util import eps
 from space.report import MuxReport, select_channels
 
-__all__ = ["SoftmaxMux", "SigmoidMux", "TernaryMuxV4", "TernaryMuxV3"]
+from .mag import alive_mask
+
+__all__ = ["SoftmaxMux", "SigmoidMux", "TernaryMuxV4", "TernaryMuxV3", "TernaryMuxV4Spatial"]
+
 
 class SoftmaxMux(nn.Module):
     def __init__(self):
 
         # self.term_logits = nn.Parameter(0.1 * torch.ones(self.n) / self.n)
         self.term_logits = nn.Parameter(0.1 * torch.rand(self.n))
-        if self.token_id >= 0: 
+        if self.token_id >= 0:
             self.term_logits.data.fill_(0.0)
             self.term_logits.data[self.token_id] = 1.0
 
@@ -32,22 +35,17 @@ class SoftmaxMux(nn.Module):
         entropy = self.term_entropy(p)
         return p, hp, entropy
 
-    def channel_ids(self, *args, **kwargs):
-        temp = kwargs.get('temp', 1e-4)
-        logits_valid = self.term_logits
-        p = F.softmax(logits_valid / temp, dim=0)
-        ids = torch.where(p > 0.1)[0]
-        return ids.tolist(), p[ids]
-
     def channel_report(self, *args, **kwargs):
         temp = kwargs.get('temp', 1e-4)
         p, hp, _ = self.p(temp)
         ids = torch.where(p > 0.1)[0]
+        # the mux reports the weights it chose; the affine stage scales them
         return MuxReport(
             ids=ids.tolist(),
             weights=p[ids],
             probs=p[ids],
             hard_weights=hp[ids],
+            offset=None,
             label=__class__.__name__,
         )
 
@@ -82,13 +80,6 @@ class SigmoidMux(nn.Module):
         entropy = self.term_entropy(p)
         return p, hp, entropy
 
-    def channel_ids(self, *args, **kwargs):
-        temp = kwargs.get('temp', 1.0)
-        logits_valid = self.term_logits * 0.001
-        p = torch.sigmoid(logits_valid / temp)
-        ids = torch.where(p > 0.1)[0]
-        return ids.tolist(), p[ids], 1.0 + 0.0 * p[ids]
-
     def channel_report(self, *args, **kwargs):
         temp = kwargs.get('temp', 1.0)
         p, hp, _ = self.p(temp)
@@ -98,14 +89,15 @@ class SigmoidMux(nn.Module):
             weights=p[ids],
             probs=p[ids],
             hard_weights=hp[ids],
+            offset=None,
             label=__class__.__name__,
         )
 
-class TernaryMuxV4(nn.Module): # 
+class TernaryMuxV4(nn.Module): #
     def __init__(self):
 
         # self.term_logits = nn.Parameter(torch.zeros(self.n))
-        self.weights = nn.Parameter(torch.ones(self.n) * 0.01) 
+        self.weights = nn.Parameter(torch.ones(self.n) * 0.01)
 
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
@@ -121,20 +113,10 @@ class TernaryMuxV4(nn.Module): #
         entropy = 0.0 #self.term_entropy(q.abs())
         return a, ha, entropy
 
-    def channel_ids(self, *args, **kwargs):
-        cache_mag = kwargs.get('cache_mag', 1.0)
-        temp = kwargs.get('temp', 1.0)
-        p = self.weights.abs() * (cache_mag > 1e-10)
-        # print("token_p", p, self.term_logits)
-
-        ids = torch.where(p > 1e-6)[0]
-        return ids.tolist(), p[ids], self.weights[ids]
-
     def channel_report(self, *args, **kwargs):
-        cache_mag = kwargs.get('cache_mag', None)
         temp = kwargs.get('temp', 1.0)
         # a signed weight mux has no probability -- the weight *is* the answer
-        alive = None if cache_mag is None else (cache_mag > 1e-10)
+        alive = alive_mask(kwargs, 1e-10)
         ids, weights, mask = select_channels(self.weights, alive)
         return MuxReport(
             ids=ids,
@@ -142,14 +124,70 @@ class TernaryMuxV4(nn.Module): #
             probs=None,
             hard_weights=weights,
             mask=mask,
+            offset=None,
             label=__class__.__name__,
         )
 
-class TernaryMuxV3(nn.Module): # 
+def _spatial_shape(grid):
+    """The spatial part of a grid: everything after the batch and channel.
+
+    (B, C, H, W) -> (H, W);  (B, W) -> (W,)
+    """
+    g = tuple(grid)
+    if len(g) >= 3:
+        return g[2:]
+    return g[1:]
+
+
+class TernaryMuxV4Spatial(nn.Module):
+    """Like :class:`TernaryMuxV4`, but the weights vary over space.
+
+    The weights are ``(n, *spatial)``: one field per channel, so the mux can
+    pick a different channel in different places.  The operator mixes over
+    the channel axis, so :meth:`p` hands the field back with the channel
+    axis last -- everything else about the mux is unchanged.
+    """
+
+    SPATIAL = True
+
+    def __init__(self):
+
+        self.spatial_shape = _spatial_shape(self.shape)
+        self.weights = nn.Parameter(torch.ones(self.n, *self.spatial_shape) * 0.01)
+
+    def p(self, temp):
+        q = self.weights
+
+        a = q
+        ha = q
+        entropy = 0.0
+        return self._op_axis(a), self._op_axis(ha), entropy
+
+    def _op_axis(self, x):
+        """(n, *spatial) -> (*spatial, n): the operator mixes over the last axis."""
+        return x.movedim(0, -1)
+
+    def channel_report(self, *args, **kwargs):
+        temp = kwargs.get('temp', 1.0)
+        # a signed weight mux has no probability -- the weight *is* the answer
+        alive = alive_mask(kwargs, 1e-10)
+        ids, weights, mask = select_channels(self.weights, alive)
+        return MuxReport(
+            ids=ids,
+            weights=weights,
+            probs=None,
+            hard_weights=weights,
+            mask=mask,
+            offset=None,
+            label=__class__.__name__,
+        )
+
+
+class TernaryMuxV3(nn.Module): #
     def __init__(self):
 
         self.term_logits = nn.Parameter(torch.zeros(self.n))
-        self.weights = nn.Parameter(torch.ones(self.n) * 0.1) 
+        self.weights = nn.Parameter(torch.ones(self.n) * 0.1)
 
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
@@ -175,22 +213,12 @@ class TernaryMuxV3(nn.Module): #
         entropy = 0.0 # (1-p).sum() # 0.0 #self.term_entropy(a.abs())
         return a, ha, entropy
 
-    def channel_ids(self, *args, **kwargs):
-        cache_mag = kwargs.get('cache_mag', 1.0)
-        temp = kwargs.get('temp', 1.0)
-        w = self.quantize(self.weights, 0.0)
-        p = w.abs() * (cache_mag > 0.01)
-        # print("token_p", p, self.term_logits)
-        ids = torch.where(p > 1e-6)[0]
-        return ids.tolist(), 1.0 + 0.0 * p[ids], w[ids]
-
     def channel_report(self, *args, **kwargs):
-        cache_mag = kwargs.get('cache_mag', None)
         temp = kwargs.get('temp', 1.0)
         # the quantizer mixes a continuous weight with a rounded one; the
         # probability of staying continuous is the only probability here
         prob = torch.sigmoid(self.term_logits * 0.001 / temp - 10)
-        alive = None if cache_mag is None else (cache_mag > 0.01)
+        alive = alive_mask(kwargs, 0.01)
         ids, weights, mask = select_channels(self.weights, alive)
         return MuxReport(
             ids=ids,
@@ -198,6 +226,7 @@ class TernaryMuxV3(nn.Module): #
             probs=prob[ids],
             hard_weights=self.quantize(self.weights, 0.0)[ids],
             mask=mask,
+            offset=None,
             label=__class__.__name__,
         )
 

@@ -11,7 +11,10 @@ import torch.nn.functional as F
 from .util import *
 from .token import Token
 from .param import OpParamV3 as OpParam
-from .report import OpReport
+from .param.affine import MuxAffine
+from .param.mag import MagCache
+from .param.stage import Stage
+from .report import OpReport, MuxReport
 
 @dataclass(eq=False)
 class OpArg:
@@ -56,8 +59,13 @@ class OpRep(nn.Module):
 
 
 class OpStack(nn.Module):
-    def __init__(self, **kwargs):
-        pass        
+    def __init__(self, affine=None, **kwargs):
+        # the affine is applied always, by default; a composition plugs in
+        # a different one by setting ``self.affine`` before this runs
+        if getattr(self, 'affine', None) is None:
+            self.affine = MuxAffine() if affine is None else affine
+        # the liveness of the channels, measured at every forward
+        self.cache = MagCache(spatial=getattr(self, 'SPATIAL', False))
 
     def read(self, stack, depth):
         # stack depth, C, H, W
@@ -95,26 +103,22 @@ class OpStack(nn.Module):
         next_item = soft_item + hardness * (hard_item - soft_item).detach()
         return next_item
 
-    def _mag(self, ws):
-        ws = ws.reshape(-1, ws.shape[-1]) # (BHW*ops, C)
-        mag = torch.linalg.norm(ws, dim=0)
-        return (mag / (mag.mean() + eps))
-
     def forward(self, stack, temp=1.0, gate_temp=1.0, hardness=0.0, **kwargs):
 
         stack = self.preprocess(stack, hardness)
         stack, working_set, memory = self.process_stack(stack, **kwargs) # read and process
 
-        self.cache_mag = self._mag(working_set)
+        self.cache.update(working_set) # cache activity
         p, hp, term_entropy = self.p(temp)
         a, gate_entropy = self.gate(gate_temp)
 
-        # print('PC', p, self.cache_mag)
+        # print('PC', p, self.cache.magnitudes)
 
         memory = self._STE_select(p, hp, memory, hardness) # select from memory
         working_set = self._STE_select(p, hp, working_set, hardness) # select from working set
+        working_set = self.affine(working_set, hardness) # linear layer
 
-        working_set = self.postprocess(working_set, hardness) # postprocess with affine transform
+        working_set = self.postprocess(working_set, hardness)
 
         memory = self.apply_gate(a, memory, self.read(stack, 1))
         working_set = self.apply_gate(a, working_set, stack[-1]) # passthrough gates
@@ -123,15 +127,45 @@ class OpStack(nn.Module):
 
         return stack, term_entropy, gate_entropy
         
-    def get_tokens(self, temp=1.0, gate_temp=1.0):
-        return self.channel_ids(cache_mag = self.cache_mag, temp=temp), self.gate_info(gate_temp)
+    def report_stages(self):
+        """The stages that describe this op, in the order they act on it.
+
+        The mux is where the weights come from; these are the stages after
+        it.  A composition that wants another stage in the report -- a
+        postprocess that does something, say -- adds it here.
+        """
+        stages = []
+        for name in ("affine", "postprocess"):
+            stage = getattr(self, name, None)
+            if isinstance(stage, Stage):
+                stages.append(stage)
+        return stages
 
     def report(self, temp=1.0, gate_temp=1.0):
-        """Structured description of what this op is doing right now."""
+        """Structured description of what this op is doing right now.
+
+        The mux reports the weights it chose, and every stage after it
+        transforms that report, so the final one describes the op's
+        *complete* operation.  The whole chain is kept in ``stages``.
+        """
+        report = getattr(self, 'channel_report', None)
+        if report is None:
+            prev = MuxReport(ids=[], weights=torch.zeros(0), label="")
+        else:
+            prev = report(cache=self.cache, temp=temp)
+
+        stages = [prev]
+        for stage in self.report_stages():
+            r = stage.report(prev, temp=temp, gate_temp=gate_temp)
+            if r is not None:
+                stages.append(r)
+                prev = r
+
         return OpReport(
             index=-1,
-            mux=self.channel_report(cache_mag=getattr(self, 'cache_mag', None), temp=temp),
+            mux=prev,
             gate=self.gate_report(gate_temp),
+            stages=stages,
         )
 
 def Operator(operator_bases):
