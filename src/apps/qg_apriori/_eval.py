@@ -150,9 +150,10 @@ def build_vocab(**_kwargs) -> Vocab:
         # ("v", 0, lambda stack, **kwargs: kwargs.get("v", 0.0)),
         # ("x", 0, lambda stack, **kwargs: kwargs.get("x", 0.0)),
         # ("y", 0, lambda stack, **kwargs: kwargs.get("y", 0.0)),
-        ("\u2202\u2093", 1, lambda stack, **kwargs: kwargs.get("dx_func", lambda z: z)(stack[-1])),
-        ("\u2202y", 1, lambda stack, **kwargs: kwargs.get("dy_func", lambda z: z)(stack[-1])),
-        ("\u2207\u00b2", 1, lambda stack, **kwargs: kwargs.get("lap_func", lambda z: z)(stack[-1])),
+        # U+2206
+        ("\u03B4\u2093\u2202\u2093", 1, lambda stack, **kwargs: kwargs.get("dx_func", lambda z: z)(stack[-1])),
+        ("\u03B4y\u2202y", 1, lambda stack, **kwargs: kwargs.get("dy_func", lambda z: z)(stack[-1])),
+        ("\u03B4\u00b2\u2207\u00b2", 1, lambda stack, **kwargs: kwargs.get("lap_func", lambda z: z)(stack[-1])),
         # ("\u2207\u207b\u00b2", 1, lambda stack, **kwargs: kwargs.get("invlap_func", lambda z: z)(stack[-1])),
         # ("sqrt", 1, lambda stack, **kwargs: norm(stack[-1], lambda y: torch.sqrt(torch.abs(y)))),
         # ("cos", 1, lambda stack, **kwargs: norm(stack[-1], torch.cos)),

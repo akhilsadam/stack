@@ -87,7 +87,9 @@ class SigmoidGateClamp(nn.Module):
 class SimpleGateClamp(nn.Module):
     def __init__(self):
         init = torch.tensor(self.gate_init)
-        init = (init + 0.1 * torch.rand_like(init)) / self.L
+        # init = (init + 0.1 * torch.rand_like(init)) / self.L
+        init = (init + 0.1 * torch.rand_like(init)) / 4
+
         self.gate_logit = nn.Parameter(init)
 
         self.tol=0.01
@@ -106,7 +108,9 @@ class SimpleGateClamp(nn.Module):
         return a, -(a * torch.log(a + eps) + (1-a) * torch.log(1-a + eps))
 
     def apply_gate(self, a, value, skip):
-        return a * value + (1-a) * skip
+        # return a * value + (1-a) * skip
+        return value #+ (1-a) * skip
+
 
     def gate_info(self, gate_temp=1.0):
         return [torch.sigmoid(self.gate_logit / gate_temp),]

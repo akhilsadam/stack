@@ -6,16 +6,12 @@ its own now: the operator applies it, and it reports itself, so the report
 shows the complete operation.
 """
 
-from dataclasses import replace
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from space.report import AffineReport
 from .stage import Stage
-
-__all__ = ["MuxAffine"]
-
 
 class MuxAffine(Stage):
     """``out = scale * mixed + shift``.
@@ -45,24 +41,11 @@ class MuxAffine(Stage):
         return self.raw_shift * self.rate
 
     def forward(self, _in, *args):
-        """The affine, exactly as it has always been applied."""
         return self.affine_scale * _in + self.affine_shift
 
-    def report(self, prev, **kwargs):
-        """Scale the weights the mux reported, and carry the shift.
-
-        The shift is a constant the op adds on top of the weighted mix, so
-        it is reported as an offset rather than as a weight.
-        """
-        if prev is None:
-            return None
-        scale = self.affine_scale
-        offset = 0.0 if prev.offset is None else float(prev.offset)
-        hard = prev.hard_weights
-        return replace(
-            prev,
-            weights=prev.weights * scale,
-            hard_weights=None if hard is None else hard * scale,
-            offset=offset + float(self.affine_shift),
-            label=(prev.label + " + " if prev.label else "") + __class__.__name__,
+    def report(self, **kwargs):
+        return AffineReport(
+            label=__class__.__name__,
+            scale=float(self.affine_scale),
+            offset=float(self.affine_shift),
         )

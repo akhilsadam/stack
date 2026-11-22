@@ -21,7 +21,7 @@ class OpNode:
     token: str
     arity: int
     weight: float
-    keep: float
+    skip: float
     # (name, mean, std) per channel -- std is 0 for a 1D mux, and the spread
     # of the field for a spatial one
     channels: List[Tuple[str, float, float]] = field(default_factory=list)
@@ -41,53 +41,41 @@ class Diagram:
     ) -> "Diagram":
         nodes = []
         for r in reports:
-            mux = r.mux
-            if mux is None or getattr(mux, "size", 0) == 0 or mux.ids is None:
-                nodes.append(OpNode(index=r.index, token=".", arity=0, weight=0.0, keep=r.keep))
+            op = r.final  # every report of the op, combined
+            if op.size == 0:
+                nodes.append(OpNode(index=r.index, token=".", arity=0, weight=0.0, skip=r.skip))
                 continue
-
-            ids = mux.ids.detach().cpu().tolist() if hasattr(mux.ids, "detach") else list(mux.ids)
 
             # a 1D mux has one weight per channel; a spatial one has a whole
             # field, which the terminal summarises as mean +- std
-            if hasattr(mux.weights, "detach"):
-                w = mux.weights.detach().to(torch.float32)
-                if w.dim() > 1:
-                    w = w.reshape(w.shape[0], -1)  # (K, cells)
-                    means = w.mean(dim=1).cpu().tolist()
-                    stds = w.std(dim=1, unbiased=False).cpu().tolist()
-                else:
-                    w = w.reshape(-1)
-                    means = w.cpu().tolist()
-                    stds = [0.0] * len(means)
-            else:
-                w = list(mux.weights)
-                means = [float(x) for x in w]
-                stds = [0.0] * len(means)
+            w = op.weights.detach().to(torch.float32)
+            w = w.reshape(w.shape[0], -1)  # (K, cells)
+            means = w.mean(dim=1).cpu().tolist()
+            stds = w.std(dim=1, unbiased=False).cpu().tolist()
 
             channels = [
-                (name_fn(int(tok)), float(mean), float(std))
-                for tok, mean, std in zip(ids, means, stds)
+                (name_fn(int(tok)), mean, std)
+                for tok, mean, std in zip(op.ids, means, stds)
             ]
-            best = int(torch.argmax(torch.tensor([abs(m) for m in means]))) if means else 0
-            tok = ids[best] if ids else 0
-            best_wt = means[best] if means else 0.0
+            best = max(range(len(means)), key=lambda i: abs(means[i]))
+            tok = op.ids[best]
 
-            # the affine's shift is a constant the op adds on top of the
-            # weighted mix, so in the diagram it is the channel "1" -- it is
-            # added after the best channel is picked, so it can never be
-            # mistaken for one of the op's terms
-            offset = getattr(mux, "offset", None)
-            if offset is not None and abs(float(offset)) > 1e-12:
-                channels.append(("1", float(offset), 0.0))
+            # two rows that are not tokens, added after the best channel is
+            # picked so they can never be mistaken for one of the op's terms:
+            #   "1"     the constant the op adds on top of the weighted mix
+            #           (the affine's shift; 0 when there is none)
+            #   "skip"  how much of the previous value the gate passes through
+            offset = 0.0 if op.offset is None else float(torch.as_tensor(op.offset).float().mean())
+            channels.append(("1", offset, 0.0))
+            channels.append(("skip", r.skip, 0.0))
 
             nodes.append(
                 OpNode(
                     index=r.index,
                     token=name_fn(int(tok)),
                     arity=arities[tok] if tok < len(arities) else 1,
-                    weight=float(abs(best_wt)),
-                    keep=r.keep,
+                    weight=abs(means[best]),
+                    skip=r.skip,
                     channels=channels,
                 )
             )

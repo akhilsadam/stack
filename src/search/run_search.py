@@ -21,7 +21,8 @@ from space.tokenizer import Stack, Operator
 # app = "equation_v2_branched" # + (fails)
 # app = "equation_v3_branched" # * (fails)
 # app = "qg_basic"
-app = "qg_apriori"
+# app = "qg_apriori"
+app = "qg_apriori_deep"
 # app = "qg_apost"
 
 

@@ -69,8 +69,8 @@ class Vocab:
         ops = []
         toks = _str.split(" ")
 
-        # passthrough = 1.0
-        passthrough = 0.5
+        passthrough = 1.0
+        # passthrough = 0.5
         
         init_kwargs = {
             "tokens": self.tokens,
@@ -148,6 +148,7 @@ class Stack(nn.Module):
         stack = stack_in or self.stack
         temp = self.T(self.temp, self.T0)
         gate_temp = self.T(self.gate_temp)
+        mux_val = []
 
         if _eval:
             gate_temp = self.T(self.gate_temp, 0.0)
@@ -155,9 +156,17 @@ class Stack(nn.Module):
 
         _entropy = 0.0
         for i, op in enumerate(self.ops):
-            stack, _term_entropy, _gate_entropy = op(stack, temp = temp[i], gate_temp = gate_temp, **kwargs)
+            stack, _term_entropy, _gate_entropy, p = op(stack, temp = temp[i], gate_temp = gate_temp, **kwargs)
             # stack_in = stack_in[-self.max_depth:]
             _entropy = _entropy + _term_entropy + _gate_entropy / len(self.vocab.tokens)
+            mux_val.append(p)
+
+
+        # mux_val = torch.stack(mux_val, dim=0) # stack n [yx]
+
+        # # should not be deficient rank
+        # loss = logdet_si_loss(mux_val) * 15
+        # loss.backward(retain_graph=True)
 
         # elems = torch.stack(stack_in[-self.vocab.seq_len:], dim=-1)
         # attn_weights = F.softmax(self.output_logits / self.output_temp, dim=0)

@@ -7,9 +7,10 @@ A stage does two things:
   * it transforms the value (``forward``), and
   * it can describe what it did (``report``).
 
-The reports form a chain: the mux reports the weights it chose, and every
-stage after it transforms that report.  The report of the last stage is
-therefore the op's *complete* operation -- which is what the diagram shows.
+A stage's report is independent of the others: it is one entry of the op's
+report list (see :class:`space.report.OpReport`), and the op's complete
+operation is the combination of that list.  A stage that has nothing to say
+returns None and simply does not appear in the list.
 """
 
 import torch
@@ -28,11 +29,11 @@ class Stage(nn.Module):
         """The value this stage produces.  Identity by default."""
         return _in
 
-    def report(self, prev, **kwargs):
-        """What this stage did to the report of the stage before it.
+    def report(self, **kwargs):
+        """A :class:`space.report.StageReport` describing this stage.
 
-        Returns the new report, or None when the stage has nothing to say
-        -- then the report is left as it was.
+        Returns None when the stage has nothing to say -- it is then left
+        out of the op's report list.
         """
         return None
 

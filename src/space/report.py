@@ -1,16 +1,25 @@
 """Structured reporting of what the stack is currently doing.
 
-The muxes and the gates are the only place where "which token, with what
-weight, with what probability" lives.  That information used to leave the
-model as ad-hoc tuples whose shapes differed from class to class (four
-different `channel_ids` signatures, two different `gate_info` signatures),
-which made it impossible to render consistently -- let alone to plot.
+An op's value is built from a few parts: the mux chooses the weights, the
+stages after it (the affine, ...) transform them, and the gate mixes the
+result against the skip.  Each part describes itself with one small report:
 
-The dataclasses below replace those tuples with one uniform shape:
+    MuxReport     -- which channels are on, with what weight, with what prob
+    AffineReport  -- a scale and a shift applied on top of the weights
+    GateReport    -- how the op mixes its own value against the skip; it is
+                     the last stage and scales everything before it by 1 - skip
 
-    MuxReport   -- which channels are on, with what weight, with what prob
-    GateReport  -- how the op mixes its own value against the skip
-    OpReport    -- both of the above for one op of the stack
+and an `OpReport` is simply the *list* of them, in the order they act:
+
+    OpReport(index, reports=[MuxReport, AffineReport, ..., GateReport])
+
+Nothing is chained or nested.  The values everything else reads -- the
+diagram, the text rendering, the plots -- are the *combination* of the list:
+`op.final` folds the reports in order into one `Combined`.  To see the parts
+instead of the total, iterate `op.reports`.
+
+Every report is a plain description; a stage report only has to implement
+`apply(state) -> state`, i.e. what it does to the running combination.
 
 Shape convention
 ----------------
@@ -21,19 +30,22 @@ axis and whose REMAINING axes are spatial:
     (K, H, W)   one value per channel per cell              (a 2D mux)
 
 Nothing in the rendering or plotting code needs to know which case it is
-looking at: text rendering collapses a spatial field to its range, the
+looking at: text rendering collapses a spatial field to mean +- std, the
 plotting helpers hand the field to matplotlib unchanged.  A 2D mux therefore
 only has to implement `channel_report` -- the whole reporting path already
 works for it.
 """
 
 from dataclasses import dataclass, field, replace
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 import torch
 
 __all__ = [
+    "Combined",
+    "StageReport",
     "MuxReport",
+    "AffineReport",
     "GateReport",
     "OpReport",
     "select_channels",
@@ -46,38 +58,33 @@ __all__ = [
 ]
 
 
-@dataclass
-class MuxReport:
-    """What one mux is doing.
+# --------------------------------------------------------------------------
+# the combination: what a list of stage reports adds up to
+# --------------------------------------------------------------------------
+
+
+@dataclass(eq=False)
+class Combined:
+    """The op's operation after every stage has been applied.
 
     ids           channel (token) ids, in channel order
-    weights       (K, *spatial) the mux weight of each channel.  For a signed
-                  weight mux this is the parameter; for a probabilistic mux it
-                  is the (normalized) mixing coefficient.  The mux reports
-                  its own weights here; the stages after it (the affine)
-                  scale them, so the *last* report of a chain holds the
-                  weights the model actually mixes with.
-    probs         (K, *spatial) the probability of each channel, or None when
-                  the mux has no probabilistic meaning (a plain signed weight
-                  mux has none).  When it exists it is *not* required to be a
-                  normalized distribution -- e.g. the ternary mux reports the
-                  probability of keeping the continuous value.
-    hard_weights  (K, *spatial) the coefficient the hard (eval) forward
-                  mixes.  None when the mux makes no difference there.
-    mask          (K, *spatial) bool -- where the channel contributes at all.
-                  Dead channels are dropped from `ids` by a 1D mux, so this
-                  is all-True there; a 2D mux uses it to mark dead cells.
-    offset        the constant the affine adds to the op on top of the
-                  weighted mix.  None when the mux has no affine.
+    weights       (K, *spatial) the weight each channel is mixed with
+    probs         (K, *spatial) probability of each channel, or None when the
+                  mux has no probabilistic meaning.  Not required to be a
+                  normalized distribution (the ternary mux reports the
+                  probability of keeping the continuous value).
+    hard_weights  (K, *spatial) the coefficient the hard (eval) forward mixes,
+                  or None when it makes no difference there
+    mask          (K, *spatial) bool -- where the channel contributes at all
+    offset        the constant added on top of the weighted mix, or None
     """
 
-    ids: List[int]
-    weights: torch.Tensor
+    ids: List[int] = field(default_factory=list)
+    weights: torch.Tensor = field(default_factory=lambda: torch.zeros(0))
     probs: Optional[torch.Tensor] = None
     hard_weights: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None
     offset: Optional[float] = None
-    label: str = ""
 
     @property
     def has_probs(self) -> bool:
@@ -95,69 +102,185 @@ class MuxReport:
     def size(self) -> int:
         return len(self.ids)
 
-    def with_weights(self, weights: torch.Tensor) -> "MuxReport":
-        """Copy with a different (e.g. hard) set of weights."""
-        return replace(self, weights=weights)
+
+# --------------------------------------------------------------------------
+# the stage reports
+# --------------------------------------------------------------------------
 
 
-@dataclass
-class GateReport:
+class StageReport:
+    """One entry of an op's report list."""
+
+    def apply(self, state: Combined) -> Combined:
+        """What this stage does to the running combination."""
+        raise NotImplementedError
+
+
+@dataclass(eq=False)
+class MuxReport(StageReport):
+    """The mux: it *chooses* the weights, so it starts the combination.
+
+    ids           channel (token) ids, in channel order.  Dead channels are
+                  dropped by a 1D mux; a 2D mux keeps them and marks the dead
+                  cells in `mask`.
+    weights       (K, *spatial) the mux's own weights.  For a signed weight
+                  mux this is the parameter; for a probabilistic mux it is
+                  the (normalized) mixing coefficient.  Later stages scale it.
+    probs         (K, *spatial) probability of each channel, or None
+    hard_weights  (K, *spatial) the coefficient the hard (eval) forward mixes
+    mask          (K, *spatial) bool -- where the channel contributes at all
+    """
+
+    ids: List[int]
+    weights: torch.Tensor
+    probs: Optional[torch.Tensor] = None
+    hard_weights: Optional[torch.Tensor] = None
+    mask: Optional[torch.Tensor] = None
+    label: str = ""
+
+    def apply(self, state: Combined) -> Combined:
+        return Combined(
+            ids=self.ids,
+            weights=self.weights,
+            probs=self.probs,
+            hard_weights=self.hard_weights,
+            mask=self.mask,
+        )
+
+
+@dataclass(eq=False)
+class AffineReport(StageReport):
+    """``out = scale * mixed + offset``, applied on top of what came before."""
+
+    scale: Union[float, torch.Tensor] = 1.0
+    offset: Optional[float] = None
+    label: str = ""
+
+    def apply(self, state: Combined) -> Combined:
+        hard = state.hard_weights
+        offset = state.offset
+        if offset is not None:
+            offset = offset #* self.scale
+        if self.offset is not None:
+            offset = self.offset if offset is None else offset + self.offset
+        return replace(
+            state,
+            weights=state.weights * self.scale,
+            hard_weights=None if hard is None else hard * self.scale,
+            offset=offset,
+        )
+
+
+@dataclass(eq=False)
+class GateReport(StageReport):
     """How one op mixes its own value against the skip.
 
-    values       (G, *spatial) the branch coefficients.  Branch 0 is the op's
-                 own value (the one the "final program" threshold looks at);
-                 branch 1 exists for a softmax gate and is the skip.
-    hard_values  (G, *spatial) the coefficients the hard (eval) forward uses.
-                 For a temperature dependent gate this differs from `values`,
-                 which is exactly the train/eval mismatch worth watching.
+    The gate is the last stage of an op.  The forward returns
+    ``(1 - skip) * value + skip * previous``, so the gate scales everything
+    the stages before it produced (the weights *and* the offset) by
+    ``1 - skip``.  There is no separate "keep": it is always 1 - skip.  The
+    skip itself is the coefficient of the previous value on the stack.
+
+    values       (G, *spatial) the coefficients as the gate reports them: one
+                 entry (the op's own value, so skip = 1 - values[0]) or, for a
+                 softmax gate, two (own value, skip).
+    hard_values  (G, *spatial) the same for the hard (eval) forward, or None
+                 when it is the same as `values`.
     """
 
     values: torch.Tensor
     hard_values: Optional[torch.Tensor] = None
     label: str = ""
 
+    @staticmethod
+    def _skip_of(values: torch.Tensor) -> torch.Tensor:
+        if values.shape[0] > 1:
+            return values[1]
+        return 1.0 - values[0]
+
     @property
     def is_spatial(self) -> bool:
         return self.values.dim() > 1
 
     @property
-    def keep(self) -> torch.Tensor:
-        """Coefficient of the op's own value."""
-        return self.values[0]
+    def skip(self) -> torch.Tensor:
+        """Coefficient of the previous value."""
+        return self._skip_of(self.values)
 
     @property
-    def keep_hard(self) -> torch.Tensor:
+    def skip_hard(self) -> torch.Tensor:
         if self.hard_values is None:
-            return self.keep
-        return self.hard_values[0]
+            return self.skip
+        return self._skip_of(self.hard_values)
+
+    def apply(self, state: Combined) -> Combined:
+        keep = 1.0 - self.skip
+        keep_hard = 1.0 - self.skip_hard
+        hard = state.hard_weights
+        offset = state.offset
+        return replace(
+            state,
+            weights=state.weights * keep,
+            hard_weights=None if hard is None else hard * keep_hard,
+            offset=None if offset is None else offset * keep,
+        )
 
 
-@dataclass
+# --------------------------------------------------------------------------
+# the op report: a list of stage reports
+# --------------------------------------------------------------------------
+
+
+def _via_final(name: str) -> property:
+    """A read-only shortcut to one attribute of the combination."""
+    return property(lambda self: getattr(self.final, name))
+
+
+@dataclass(eq=False)
 class OpReport:
     """The full report of one op of the stack.
 
-    mux       the final report: the mux's weights after every stage has
-              transformed them, so it describes the op's complete operation
-    gate      how the op mixes its own value against the skip
-    stages    the whole chain, in order: the mux's own report first, then
-              one entry per stage that had something to say (the affine,
-              for one).  Each entry is the report as it stood after that
-              stage.
+    reports   the stage reports in the order they act: the mux first, then
+              the stages after it (the affine, ...), then the gate last --
+              it scales everything before it by ``1 - skip``
     """
 
     index: int
-    mux: MuxReport
-    gate: GateReport
-    stages: List[MuxReport] = field(default_factory=list)
+    reports: List[StageReport] = field(default_factory=list)
+
+    @classmethod
+    def collect(cls, index: int, reports: Sequence[Optional[StageReport]]) -> "OpReport":
+        """Build from whatever the stages returned; stages with nothing to say (None) are skipped."""
+        return cls(index=index, reports=[r for r in reports if r is not None])
 
     @property
-    def keep(self) -> float:
-        """Scalar summary of the gate's keep coefficient."""
-        return scalar_value(self.gate.keep)
+    def final(self) -> Combined:
+        """All the reports folded together, in order: the op's complete operation."""
+        state = Combined()
+        for report in self.reports:
+            state = report.apply(state)
+        return state
 
     @property
-    def keep_hard(self) -> float:
-        return scalar_value(self.gate.keep_hard)
+    def gate(self) -> Optional[GateReport]:
+        return next((r for r in self.reports if isinstance(r, GateReport)), None)
+
+    # shortcuts to the combination
+    ids = _via_final("ids")
+    weights = _via_final("weights")
+    hard_weights = _via_final("hard_weights")
+    probs = _via_final("probs")
+    mask = _via_final("mask")
+    offset = _via_final("offset")
+    has_probs = _via_final("has_probs")
+    is_spatial = _via_final("is_spatial")
+    spatial_shape = _via_final("spatial_shape")
+
+    @property
+    def skip(self) -> float:
+        """Scalar summary of the gate's skip coefficient (0.0 without a gate)."""
+        gate = self.gate
+        return 0.0 if gate is None else scalar_value(gate.skip)
 
 
 def scalar_value(t) -> float:
@@ -207,6 +330,11 @@ def select_channels(
     return ids.tolist(), w[ids], (mask[ids] if mask is not None else None)
 
 
+# --------------------------------------------------------------------------
+# text rendering
+# --------------------------------------------------------------------------
+
+
 def format_value(value, fmt: str = "{:.3f}", std_fmt: str = "{:.3f}") -> str:
     """Short text for a scalar or for a spatial field.
 
@@ -236,19 +364,20 @@ def _same(a: Optional[torch.Tensor], b: Optional[torch.Tensor]) -> bool:
     return bool(torch.equal(a.detach(), b.detach()))
 
 
-def render_mux(mux: MuxReport, name_fn: Callable[[int], str]) -> str:
+def render_mux(op: Combined, name_fn: Callable[[int], str]) -> str:
     """`token(w=+0.010)` / `token(w=-0.010,p=0.120)`, one entry per channel."""
     parts = []
-    for j, token_id in enumerate(mux.ids):
-        chunk = "{}(w={})".format(name_fn(token_id), format_value(mux.weights[j], "{:+.3f}"))
-        if mux.probs is not None and not _same(mux.probs, mux.weights):
-            chunk += ",p={}".format(format_value(mux.probs[j]))
+    for j, token_id in enumerate(op.ids):
+        chunk = "{}(w={})".format(name_fn(token_id), format_value(op.weights[j], "{:+.3f}"))
+        probs = op.probs
+        if probs is not None and not _same(probs, op.weights):
+            chunk += ",p={}".format(format_value(probs[j]))
         parts.append(chunk)
 
-    if mux.offset is not None and abs(float(mux.offset)) > 1e-12:
+    if abs(scalar_value(op.offset)) > 1e-12:
         # the affine's shift is a constant on top of the weighted mix; the
         # diagram shows it as the channel "1", so the text does too
-        parts.append("1(w={})".format(format_value(mux.offset, "{:+.3f}")))
+        parts.append("1(w={})".format(format_value(op.offset, "{:+.3f}")))
     return " ".join(parts)
 
 
@@ -260,32 +389,36 @@ def render_gate(gate: GateReport) -> str:
 
 
 def render_op(op: OpReport, name_fn: Callable[[int], str]) -> str:
-    return render_mux(op.mux, name_fn)
+    return render_mux(op.final, name_fn)
 
 
-def _quantities(mux: MuxReport, cmap_signed: str, cmap_prob: str):
+# --------------------------------------------------------------------------
+# plotting
+# --------------------------------------------------------------------------
+
+
+def _quantities(stage: Combined, cmap_signed: str, cmap_prob: str):
     """The (label, values, cmap, is_signed) panels one op needs."""
-    quantities = [("w", mux.weights, cmap_signed, True)]
-    if mux.has_probs and not _same(mux.probs, mux.weights):
-        quantities.append(("p", mux.probs, cmap_prob, False))
+    quantities = [("w", stage.weights, cmap_signed, True)]
+    if stage.has_probs and not _same(stage.probs, stage.weights):
+        quantities.append(("p", stage.probs, cmap_prob, False))
     return quantities
 
 
-def _n_panels(mux: MuxReport, quantities) -> int:
-    if mux.is_spatial:
-        return mux.weights.shape[0] * len(quantities)
+def _n_panels(stage: Combined, quantities) -> int:
+    if stage.is_spatial:
+        return stage.weights.shape[0] * len(quantities)
     return len(quantities)
-
 
 def _draw_op_panels(fig, axs, op: OpReport, name_fn, quantities) -> None:
     """Draw one op's panels onto the given axes (left to right)."""
     from matplotlib.colors import TwoSlopeNorm
 
-    mux = op.mux
+    stage = op.final
     col = 0
     for label, values, cmap, signed in quantities:
         v = values.detach().to(torch.float32).cpu()
-        if mux.is_spatial:
+        if stage.is_spatial:
             vmin = float(v.min())
             vmax = float(v.max())
             if signed:
@@ -293,7 +426,7 @@ def _draw_op_panels(fig, axs, op: OpReport, name_fn, quantities) -> None:
                 norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
             else:
                 norm = None
-            for j, token_id in enumerate(mux.ids):
+            for j, token_id in enumerate(stage.ids):
                 ax = axs[col]
                 im = ax.imshow(v[j].numpy(), cmap=cmap, norm=norm, origin="lower")
                 ax.set_title(
@@ -306,7 +439,7 @@ def _draw_op_panels(fig, axs, op: OpReport, name_fn, quantities) -> None:
                 col += 1
         else:
             ax = axs[col]
-            names = [name_fn(t) for t in mux.ids]
+            names = [name_fn(t) for t in stage.ids]
             y = list(range(len(names)))
             vals = v.reshape(v.shape[0], -1).mean(dim=1)
             colors = (
@@ -340,8 +473,8 @@ def plot_op(
     """
     from matplotlib import pyplot as plt
 
-    quantities = _quantities(op.mux, cmap_signed, cmap_prob)
-    ncols = _n_panels(op.mux, quantities)
+    quantities = _quantities(op.final, cmap_signed, cmap_prob)
+    ncols = _n_panels(op.final, quantities)
 
     fig, axs = plt.subplots(
         1, ncols, figsize=(3.0 * ncols, 3.0), squeeze=False
@@ -373,14 +506,14 @@ def plot_stack(
     # needs (a spatial op needs one panel per channel and quantity)
     per_op = []
     for op in reports:
-        quantities = _quantities(op.mux, cmap_signed, cmap_prob)
-        per_op.append((op, quantities, _n_panels(op.mux, quantities)))
+        quantities = _quantities(op.final, cmap_signed, cmap_prob)
+        per_op.append((op, quantities, _n_panels(op.final, quantities)))
 
     nrows = len(per_op)
     ncols = max(n for _, _, n in per_op)
 
     # a spatial row draws heatmaps and needs to be taller than a 1D bar row
-    heights = [3.4 if op.mux.is_spatial else 2.2 for op, _, _ in per_op]
+    heights = [3.4 if op.final.is_spatial else 2.2 for op, _, _ in per_op]
 
     fig = plt.figure(figsize=(3.5 * ncols, sum(heights)))
     gs = fig.add_gridspec(

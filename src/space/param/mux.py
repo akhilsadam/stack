@@ -8,7 +8,22 @@ from space.report import MuxReport, select_channels
 
 from .mag import alive_mask
 
-__all__ = ["SoftmaxMux", "SigmoidMux", "TernaryMuxV4", "TernaryMuxV3", "TernaryMuxV4Spatial"]
+def _simplex_report(p, hp, label):
+    """Report of a probabilistic mux: the channels that carry real probability."""
+    ids = torch.where(p > 0.1)[0]
+    return MuxReport(
+        ids=ids.tolist(),
+        weights=p[ids],
+        probs=p[ids],
+        hard_weights=hp[ids],
+        label=label,
+    )
+
+def _signed_report(weights, kwargs, label):
+    """Report of a signed weight mux: it has no probability, the weight *is* the answer."""
+    alive = alive_mask(kwargs, 1e-10)
+    ids, w, mask = select_channels(weights, alive)
+    return MuxReport(ids=ids, weights=w, hard_weights=w, mask=mask, label=label)
 
 
 class SoftmaxMux(nn.Module):
@@ -25,7 +40,7 @@ class SoftmaxMux(nn.Module):
 
     def p(self, temp):
         logits = self.term_logits
-        logits = logits / temp 
+        logits = logits / temp
         # logits = logits * 0.001 / temp # doesn't work even with lower temp, softmax pushes
         p = F.softmax(logits, dim=0)
         hp = F.softmax(logits / 1e-5, dim=0)
@@ -36,18 +51,8 @@ class SoftmaxMux(nn.Module):
         return p, hp, entropy
 
     def channel_report(self, *args, **kwargs):
-        temp = kwargs.get('temp', 1e-4)
-        p, hp, _ = self.p(temp)
-        ids = torch.where(p > 0.1)[0]
-        # the mux reports the weights it chose; the affine stage scales them
-        return MuxReport(
-            ids=ids.tolist(),
-            weights=p[ids],
-            probs=p[ids],
-            hard_weights=hp[ids],
-            offset=None,
-            label=__class__.__name__,
-        )
+        p, hp, _ = self.p(kwargs.get('temp', 1e-4))
+        return _simplex_report(p, hp, __class__.__name__)
 
 
 class SigmoidMux(nn.Module):
@@ -58,7 +63,7 @@ class SigmoidMux(nn.Module):
         self.term_logits = nn.Parameter(0.1 * (torch.rand(self.n) - 0.5))
         # self.term_logits = nn.Parameter(0.1 * torch.rand(self.n))
 
-        if self.token_id >= 0: 
+        if self.token_id >= 0:
             self.term_logits.data.fill_(0.0)
             self.term_logits.data[self.token_id] = 1.0
 
@@ -81,23 +86,16 @@ class SigmoidMux(nn.Module):
         return p, hp, entropy
 
     def channel_report(self, *args, **kwargs):
-        temp = kwargs.get('temp', 1.0)
-        p, hp, _ = self.p(temp)
-        ids = torch.where(p > 0.1)[0]
-        return MuxReport(
-            ids=ids.tolist(),
-            weights=p[ids],
-            probs=p[ids],
-            hard_weights=hp[ids],
-            offset=None,
-            label=__class__.__name__,
-        )
+        p, hp, _ = self.p(kwargs.get('temp', 1.0))
+        return _simplex_report(p, hp, __class__.__name__)
+
 
 class TernaryMuxV4(nn.Module): #
     def __init__(self):
 
         # self.term_logits = nn.Parameter(torch.zeros(self.n))
         self.weights = nn.Parameter(torch.ones(self.n) * 0.01)
+        # self.weights = nn.Parameter(torch.rand(self.n) * 0.01)
 
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
@@ -114,19 +112,8 @@ class TernaryMuxV4(nn.Module): #
         return a, ha, entropy
 
     def channel_report(self, *args, **kwargs):
-        temp = kwargs.get('temp', 1.0)
-        # a signed weight mux has no probability -- the weight *is* the answer
-        alive = alive_mask(kwargs, 1e-10)
-        ids, weights, mask = select_channels(self.weights, alive)
-        return MuxReport(
-            ids=ids,
-            weights=weights,
-            probs=None,
-            hard_weights=weights,
-            mask=mask,
-            offset=None,
-            label=__class__.__name__,
-        )
+        return _signed_report(self.weights, kwargs, __class__.__name__)
+
 
 def _spatial_shape(grid):
     """The spatial part of a grid: everything after the batch and channel.
@@ -168,19 +155,7 @@ class TernaryMuxV4Spatial(nn.Module):
         return x.movedim(0, -1)
 
     def channel_report(self, *args, **kwargs):
-        temp = kwargs.get('temp', 1.0)
-        # a signed weight mux has no probability -- the weight *is* the answer
-        alive = alive_mask(kwargs, 1e-10)
-        ids, weights, mask = select_channels(self.weights, alive)
-        return MuxReport(
-            ids=ids,
-            weights=weights,
-            probs=None,
-            hard_weights=weights,
-            mask=mask,
-            offset=None,
-            label=__class__.__name__,
-        )
+        return _signed_report(self.weights, kwargs, __class__.__name__)
 
 
 class TernaryMuxV3(nn.Module): #
@@ -226,10 +201,8 @@ class TernaryMuxV3(nn.Module): #
             probs=prob[ids],
             hard_weights=self.quantize(self.weights, 0.0)[ids],
             mask=mask,
-            offset=None,
             label=__class__.__name__,
         )
-
 
       # logits = self.term_logits * 0.001
         # logits = logits / temp
