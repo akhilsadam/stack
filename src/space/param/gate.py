@@ -89,7 +89,7 @@ class SimpleGateClamp(nn.Module):
         init = torch.tensor(self.gate_init)
         # init = (init + 0.1 * torch.rand_like(init)) / self.L
         # init = (init + 0.1 * torch.rand_like(init)) / 4
-        init = 0.25 + 0.0 * init
+        init = 0.99 + 0.0 * init
 
         self.gate_logit = nn.Parameter(init)
 

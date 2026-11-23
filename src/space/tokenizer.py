@@ -287,7 +287,7 @@ class Stack(nn.Module):
 
             ### NEW
             converged = (loss_target < 1e-6)
-            b = 1e-1 if converged else 0
+            b = 1 #1e-1 if converged else 0
             c = 1e-4 if converged else 0
             loss = loss_target + b * loss_entropy + c * loss_temp + 1e-4 * loss_gate
 
@@ -298,7 +298,9 @@ class Stack(nn.Module):
             if i % 100 == 0 or i==self._iter-1:
                 z_hat_hard = _eval(self.forward, _eval=True)
                 loss_hard = _eval.metric(z_hat_hard, _eval.target)
-                losses = f"\n loss_final: {loss_hard.item():.2e}, loss_target: {loss_target.item():.2e}, loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}\nloss_relmse_soft: {(loss_target.item()/(torch.var(_eval.target) + 1e-14)):.2e}"
+                losses = f"\nhard: loss_target: {loss_hard.item():.2e}, loss_relmse: {(loss_hard.item()/(torch.var(_eval.target) + 1e-14)):.2e}" \
+                + f"\nsoft: loss_target: {loss_target.item():.2e}, loss_relmse: {(loss_target.item()/(torch.var(_eval.target) + 1e-14)):.2e}" \
+                + f"\n      loss_entropy: {loss_entropy.item():.2e}, loss_gate: {loss_gate.item():.2e}"
                 logger.info(f"\nIteration {i}: {self.detokenize()} {losses}")
                 _eval.plot(z_hat_hard.detach(), z_hat.detach(), _eval.target, i)
             

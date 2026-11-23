@@ -66,6 +66,8 @@ class OpStack(nn.Module):
         # the liveness of the channels, measured at every forward
         self.cache = MagCache(spatial=getattr(self, 'SPATIAL', False))
 
+        self.noise = nn.Parameter(torch.randn(self.shape))
+
     def read(self, stack, depth):
         # stack depth, C, H, W
         if depth == 0:
@@ -124,6 +126,9 @@ class OpStack(nn.Module):
         # arity = self.compute_arity(p)
 
         working_set = self.affine(working_set, hardness) # linear layer
+
+        working_set = working_set + (1-hardness) * self.noise * temp
+        term_entropy = term_entropy + (self.noise).pow(2).sum()
 
         working_set = self.postprocess(working_set, hardness)
 
