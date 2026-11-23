@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from .util import *
 from .token import Token
 from .param import OpParamV3 as OpParam
-from .param.affine import MuxAffine
+from .param.affine import *
 from .param.mag import MagCache
 from .report import OpReport
 
@@ -59,9 +59,10 @@ class OpRep(nn.Module):
 
 class OpStack(nn.Module):
     def __init__(self, **kwargs):
-        # the affine is applied always, by default; a composition plugs in
-        # a different one by setting ``self.affine`` before this runs
         self.affine = MuxAffine()
+        # self.affine = MuxAffineLN()
+
+
         # the liveness of the channels, measured at every forward
         self.cache = MagCache(spatial=getattr(self, 'SPATIAL', False))
 

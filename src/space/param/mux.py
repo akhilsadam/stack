@@ -94,7 +94,7 @@ class TernaryMuxV4(nn.Module): #
     def __init__(self):
 
         # self.term_logits = nn.Parameter(torch.zeros(self.n))
-        self.weights = nn.Parameter(torch.ones(self.n) * 0.01)
+        self.weights = nn.Parameter(torch.ones(self.n) * 0.0001)
         # self.weights = nn.Parameter(torch.rand(self.n) * 0.01)
 
     def term_entropy(self, p):

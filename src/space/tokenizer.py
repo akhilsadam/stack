@@ -29,6 +29,8 @@ from .operator import *
 from .report import render_op, render_gate, plot_stack
 from .diagram import Diagram, render_diagram
 
+from .opt.GNA import GradNormAdam
+
 class Vocab:
 
     def __init__(
@@ -128,9 +130,9 @@ class Stack(nn.Module):
         self.temp = nn.Parameter(torch.ones(self.vocab.seq_len))
         self.gate_temp = nn.Parameter(torch.tensor(1.0))
 
-        self.output_logits = nn.Parameter(torch.zeros(min(self.vocab.seq_len, self.capacity)))
-        self.output_logits.data[-1] = 1.0
-        self.output_temp = 1.0
+        # self.output_logits = nn.Parameter(torch.zeros(min(self.vocab.seq_len, self.capacity)))
+        # self.output_logits.data[-1] = 1.0
+        # self.output_temp = 1.0
 
         self._iter = kwargs.get('_iter', 2000)
 
@@ -168,15 +170,17 @@ class Stack(nn.Module):
         # loss = logdet_si_loss(mux_val) * 15
         # loss.backward(retain_graph=True)
 
-        # elems = torch.stack(stack_in[-self.vocab.seq_len:], dim=-1)
-        # attn_weights = F.softmax(self.output_logits / self.output_temp, dim=0)
-        # out = torch.sum(elems * attn_weights, dim=-1) # provides gradient, bypass constants that gradient block
+        # elems = stack[-self.vocab.seq_len:].to(torch.float32)
+        # attn_weights = F.softmax(self.output_logits / self.output_temp, dim=0).to(torch.float32)
+        # out = torch.einsum("s..., s -> ...", elems, attn_weights) # provides gradient, bypass constants that gradient block
         # return out
         
         # assign cached vars
         self._term_entropy = self._term_entropy + _entropy
 
         return stack[-1] # last element
+        # out = stack[-1]
+        # return out
 
     @torch.no_grad()
     def report(self, threshold = 0.05):
@@ -233,6 +237,7 @@ class Stack(nn.Module):
     
     def _train(self, _eval, lr=1e-2, **kwargs):
         opt = create_optimizer(self, torch.optim.Adam, lr)
+        # opt = create_optimizer(self, GradNormAdam, lr)
         for i in range(self._iter):
             opt.zero_grad()
 

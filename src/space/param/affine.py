@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from space.report import AffineReport
 from .stage import Stage
 
+eps = 1e-8
+
 class MuxAffine(Stage):
     """``out = scale * mixed + shift``.
 
@@ -42,6 +44,48 @@ class MuxAffine(Stage):
 
     def forward(self, _in, *args):
         return self.affine_scale * _in + self.affine_shift
+
+    def report(self, **kwargs):
+        return AffineReport(
+            label=__class__.__name__,
+            scale=float(self.affine_scale),
+            offset=float(self.affine_shift),
+        )
+
+class MuxAffineLN(Stage):
+    """``out = scale * mixed + shift``.
+    """
+
+    def __init__(self, scale=1.0, shift=0.0, rate=0.1):
+        super().__init__()
+
+        self.rate = rate
+        self.raw_scale = nn.Parameter(torch.tensor(scale) / self.rate)
+        self.raw_shift = nn.Parameter(torch.tensor(shift) / self.rate)
+
+        self.affine_scale = self.raw_scale * self.rate
+        self.affine_shift = self.raw_shift * self.rate
+
+    def forward(self, _in, *args):
+        # layer norm
+        _mu = _in.mean()
+        _std = _in.std() + eps
+        _ln = (_in - _mu) / _std
+
+        _shift = - _mu / _std
+        _scale = 1 / _std
+
+        _lscale = self.raw_scale * self.rate
+        _lshift = self.raw_shift * self.rate
+
+        _affine_scale = _scale * _lscale
+        _affine_shift = _shift * _lscale + _lshift
+
+        # cache
+        self.affine_scale = _affine_scale.detach()
+        self.affine_shift = _affine_shift.detach()
+
+        return _lscale * _ln + _lshift
 
     def report(self, **kwargs):
         return AffineReport(
