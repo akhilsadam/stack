@@ -67,7 +67,7 @@ class Diagram:
             #   "skip"  how much of the previous value the gate passes through
             offset = 0.0 if op.offset is None else float(torch.as_tensor(op.offset).float().mean())
             channels.append(("1", offset, 0.0))
-            channels.append(("skip", r.skip, 0.0))
+            # channels.append(("skip", r.skip, 0.0))
 
             nodes.append(
                 OpNode(

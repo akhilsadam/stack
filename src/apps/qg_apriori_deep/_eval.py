@@ -459,8 +459,8 @@ class Evaluator:
         axs[1,2].set_title("hard closure only (signal)")
         fig.colorbar(im6, ax=axs[1,2])
 
-        im7 = axs[1,3].imshow((y_hat_soft - y).detach().cpu()[0,0], cmap=draw.cmap)
-        axs[1,3].set_title("soft closure err")
+        im7 = axs[1,3].imshow((y_hat_hard - y).detach().cpu()[0,0], cmap=draw.cmap)
+        axs[1,3].set_title("hard closure err")
         fig.colorbar(im7, ax=axs[1,3])
 
         plt.suptitle(f'a-priori closure at it={iter} for {self.target_pde}')

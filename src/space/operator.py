@@ -117,7 +117,6 @@ class OpStack(nn.Module):
 
         self.cache.update(working_set) # cache activity
         p, hp, term_entropy = self.p(temp)
-        a, gate_entropy = self.gate(gate_temp)
 
         # print('PC', p, self.cache.magnitudes)
 
@@ -127,16 +126,17 @@ class OpStack(nn.Module):
 
         working_set = self.affine(working_set, hardness) # linear layer
 
-        working_set = working_set + (1-hardness) * self.noise * temp
-        term_entropy = term_entropy + (self.noise).pow(2).sum()
+        # noise = self.noise
+        # noise = (torch.randn_like(self.noise)) * noise
+        # working_set = working_set #+ (1 - hardness) * noise * temp
+        # term_entropy = term_entropy + (self.noise).pow(2).sum()
 
         working_set = self.postprocess(working_set, hardness)
-
-        memory = self.apply_gate(a, memory, self.read(stack, 1))
-        working_set = self.apply_gate(a, working_set, stack[-1]) # passthrough gates
+        memory = self.read(stack, 1)
 
         stack = self.stack(working_set, memory) # write back to stack
 
+        gate_entropy = 0.0
         return stack, term_entropy, gate_entropy, p
 
     def report(self, temp=1.0, gate_temp=1.0):
@@ -149,7 +149,7 @@ class OpStack(nn.Module):
                     temp=temp,
                 ),
                 self.affine.report(temp=temp),
-                self.gate_report(gate_temp),
+                # self.gate_report(gate_temp),
             ],
         )
 
