@@ -93,3 +93,26 @@ class MuxAffineLN(Stage):
             scale=float(self.affine_scale),
             offset=float(self.affine_shift),
         )
+
+class LN(Stage):
+
+    def __init__(self):
+        super().__init__()
+
+        self.mu = torch.tensor(0.0)
+        self.std = torch.tensor(1.0)
+
+    def forward(self, _in, *args):
+        # ... op
+        mu = _in.mean(dim=list(range(len(_in.shape) - 1)), keepdim=True)
+        std = _in.std(dim=list(range(len(_in.shape) - 1)), keepdim=True) + 1e-8
+        self.mu = mu.detach()
+        self.std = std.detach()
+        return (_in - mu) / std
+
+    def report(self, **kwargs):
+        return AffineReport(
+            label=__class__.__name__,
+            scale=(1.0 / self.std).squeeze(),
+            offset=(-self.mu / self.std).squeeze(),
+        )

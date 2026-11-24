@@ -10,7 +10,7 @@ import torch
 
 from space.util import eps
 
-__all__ = ["mag", "mag_field", "MagCache", "alive_mask"]
+__all__ = ["mag", "mag_field", "alive_mask"]
 
 
 def mag(ws):
@@ -35,52 +35,14 @@ def mag_field(ws):
     return (m / (m.mean() + eps))
 
 
-class MagCache:
-    """The liveness of an op's channels, cached for the report.
+def alive_mask(working_set, threshold=1e-10, spatial=False):
+    """Where each channel contributes at all.
 
-    ``magnitudes`` is one number per channel.  ``field`` is the same thing
-    per point of space -- only measured when the mux is spatial, since it
-    costs more.
+    (n,) for a 1D mux, (n, *spatial) for a spatial one: the field when
+    spatial is True, so the mux can drop the dead cells and keep the channel.
     """
-
-    def __init__(self, spatial=False):
-        self.spatial = spatial
-        self.magnitudes = None
-        self.field = None
-
-    def update(self, working_set):
-        """Measure the channels of a working set (B, C, *spatial, n_ops)."""
-        self.magnitudes = mag(working_set)
-        self.field = mag_field(working_set) if self.spatial else None
-        return self
-
-    def alive(self, threshold=1e-10):
-        """Where each channel contributes at all.
-
-        (n,) for a 1D mux, (n, *spatial) for a spatial one: the field when
-        there is one, so the mux can drop the dead cells and keep the
-        channel.
-        """
-        if self.field is not None:
-            return self.field > threshold
-        if self.magnitudes is not None:
-            return self.magnitudes > threshold
+    if working_set is None:
         return None
-
-
-def alive_mask(kwargs, threshold=1e-10):
-    """The liveness mask, from whichever cache the caller passed.
-
-    A ``cache`` (a ``MagCache``) is the current spelling; ``cache_mag`` and
-    ``cache_mag_field`` are the older ones and still work.
-    """
-    cache = kwargs.get('cache', None)
-    if cache is not None:
-        return cache.alive(threshold)
-    field = kwargs.get('cache_mag_field', None)
-    if field is not None:
-        return field > threshold
-    magnitudes = kwargs.get('cache_mag', None)
-    if magnitudes is not None:
-        return magnitudes > threshold
-    return None
+    if spatial:
+        return mag_field(working_set) > threshold
+    return mag(working_set) > threshold

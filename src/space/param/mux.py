@@ -19,17 +19,14 @@ def _simplex_report(p, hp, label):
         label=label,
     )
 
-def _signed_report(weights, kwargs, label):
+def _signed_report(weights, alive, label):
     """Report of a signed weight mux: it has no probability, the weight *is* the answer."""
-    alive = alive_mask(kwargs, 1e-10)
     ids, w, mask = select_channels(weights, alive)
     return MuxReport(ids=ids, weights=w, hard_weights=w, mask=mask, label=label)
 
 
 class SoftmaxMux(nn.Module):
     def __init__(self):
-
-        # self.term_logits = nn.Parameter(0.1 * torch.ones(self.n) / self.n)
         self.term_logits = nn.Parameter(0.1 * torch.rand(self.n))
         if self.token_id >= 0:
             self.term_logits.data.fill_(0.0)
@@ -38,81 +35,65 @@ class SoftmaxMux(nn.Module):
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
 
-    def p(self, temp):
-        logits = self.term_logits
-        logits = logits / temp
-        # logits = logits * 0.001 / temp # doesn't work even with lower temp, softmax pushes
+    def p(self, working_set, temp=1.0):
+        logits = self.term_logits / temp
         p = F.softmax(logits, dim=0)
         hp = F.softmax(logits / 1e-5, dim=0)
 
-        # p = F.gumbel_softmax(logits, dim=0, tau=temp, hard=True)
-
         entropy = self.term_entropy(p)
+        self._cached_p = p.detach()
+        self._cached_hp = hp.detach()
         return p, hp, entropy
 
     def channel_report(self, *args, **kwargs):
-        p, hp, _ = self.p(kwargs.get('temp', 1e-4))
-        return _simplex_report(p, hp, __class__.__name__)
+        return _simplex_report(self._cached_p, self._cached_hp, __class__.__name__)
 
 
 class SigmoidMux(nn.Module):
     def __init__(self):
-
-        # self.term_logits = nn.Parameter(0.1 * torch.ones(self.n) / self.n)
-        # self.term_logits = nn.Parameter(0.0001 * torch.rand(self.n)) # init temp not important, need temp scaling
         self.term_logits = nn.Parameter(0.1 * (torch.rand(self.n) - 0.5))
-        # self.term_logits = nn.Parameter(0.1 * torch.rand(self.n))
-
         if self.token_id >= 0:
             self.term_logits.data.fill_(0.0)
             self.term_logits.data[self.token_id] = 1.0
 
-        # self.term_logits.scaling_factor = (1/6) * self.m * self.L
-
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
 
-    def p(self, temp):
-        logits = self.term_logits * 0.001
-        logits = logits / temp
+    def p(self, working_set, temp=1.0):
+        logits = self.term_logits * 0.001 / temp
         p = torch.sigmoid(logits)
         p = p / p.sum()
 
         hp = torch.sigmoid(logits / 1e-5)
         hp = hp / hp.sum()
-        # print(p)
 
         entropy = self.term_entropy(p)
+        self._cached_p = p.detach()
+        self._cached_hp = hp.detach()
         return p, hp, entropy
 
     def channel_report(self, *args, **kwargs):
-        p, hp, _ = self.p(kwargs.get('temp', 1.0))
-        return _simplex_report(p, hp, __class__.__name__)
+        return _simplex_report(self._cached_p, self._cached_hp, __class__.__name__)
 
 
-class TernaryMuxV4(nn.Module): #
+class TernaryMuxV4(nn.Module):
     def __init__(self):
-
-        # self.term_logits = nn.Parameter(torch.zeros(self.n))
         self.weights = nn.Parameter(torch.ones(self.n) * 0.0001)
-        # self.weights = nn.Parameter(torch.rand(self.n) * 0.01)
 
     def term_entropy(self, p):
         return -(p * torch.log(p + eps)).sum() / math.log(p.shape[0] + eps)
 
-    def p(self, temp):
+    def p(self, working_set, temp=1.0):
+        self._cached_alive = alive_mask(working_set, 1e-10, spatial=getattr(self, 'SPATIAL', False)).detach()
 
         q = self.weights
-
         a = q
         ha = q
-        # q = self.quantize(self.weights)
-
-        entropy = 0.0 #self.term_entropy(q.abs())
+        entropy = 0.0
         return a, ha, entropy
 
     def channel_report(self, *args, **kwargs):
-        return _signed_report(self.weights, kwargs, __class__.__name__)
+        return _signed_report(self.weights, self._cached_alive, __class__.__name__)
 
 
 def _spatial_shape(grid):
@@ -138,13 +119,13 @@ class TernaryMuxV4Spatial(nn.Module):
     SPATIAL = True
 
     def __init__(self):
-
         self.spatial_shape = _spatial_shape(self.shape)
         self.weights = nn.Parameter(torch.ones(self.n, *self.spatial_shape) * 0.01)
 
-    def p(self, temp):
-        q = self.weights
+    def p(self, working_set, temp=1.0):
+        self._cached_alive = alive_mask(working_set, 1e-10, spatial=True).detach()
 
+        q = self.weights
         a = q
         ha = q
         entropy = 0.0
@@ -155,12 +136,11 @@ class TernaryMuxV4Spatial(nn.Module):
         return x.movedim(0, -1)
 
     def channel_report(self, *args, **kwargs):
-        return _signed_report(self.weights, kwargs, __class__.__name__)
+        return _signed_report(self.weights, self._cached_alive, __class__.__name__)
 
 
-class TernaryMuxV3(nn.Module): #
+class TernaryMuxV3(nn.Module):
     def __init__(self):
-
         self.term_logits = nn.Parameter(torch.zeros(self.n))
         self.weights = nn.Parameter(torch.ones(self.n) * 0.1)
 
@@ -178,27 +158,24 @@ class TernaryMuxV3(nn.Module): #
 
         return w_q
 
-    def p(self, temp):
-        p = torch.sigmoid(self.term_logits * 0.001 / temp - 10)
-        q = self.quantize(self.weights, p)
+    def p(self, working_set, temp=1.0):
+        self._cached_alive = alive_mask(working_set, 0.01, spatial=getattr(self, 'SPATIAL', False)).detach()
+
+        prob = torch.sigmoid(self.term_logits * 0.001 / temp - 10)
+        self._cached_prob = prob.detach()
+        q = self.quantize(self.weights, prob)
 
         a = q
         ha = q
-
-        entropy = 0.0 # (1-p).sum() # 0.0 #self.term_entropy(a.abs())
+        entropy = 0.0
         return a, ha, entropy
 
     def channel_report(self, *args, **kwargs):
-        temp = kwargs.get('temp', 1.0)
-        # the quantizer mixes a continuous weight with a rounded one; the
-        # probability of staying continuous is the only probability here
-        prob = torch.sigmoid(self.term_logits * 0.001 / temp - 10)
-        alive = alive_mask(kwargs, 0.01)
-        ids, weights, mask = select_channels(self.weights, alive)
+        ids, weights, mask = select_channels(self.weights, self._cached_alive)
         return MuxReport(
             ids=ids,
             weights=weights,
-            probs=prob[ids],
+            probs=self._cached_prob[ids],
             hard_weights=self.quantize(self.weights, 0.0)[ids],
             mask=mask,
             label=__class__.__name__,

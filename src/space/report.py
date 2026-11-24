@@ -153,23 +153,25 @@ class AffineReport(StageReport):
     """``out = scale * mixed + offset``, applied on top of what came before."""
 
     scale: Union[float, torch.Tensor] = 1.0
-    offset: Optional[float] = None
+    offset: Optional[Union[float, torch.Tensor]] = None
     label: str = ""
 
     def apply(self, state: Combined) -> Combined:
+        scale = self.scale[state.ids] if torch.is_tensor(self.scale) and self.scale.dim() > 0 else self.scale
         hard = state.hard_weights
+
         offset = state.offset
-        if offset is not None:
-            offset = offset #* self.scale
         if self.offset is not None:
-            offset = self.offset if offset is None else offset + self.offset
+            off = self.offset[state.ids] if torch.is_tensor(self.offset) and self.offset.dim() > 0 else self.offset
+            off = (state.weights * off).sum(dim=0) if torch.is_tensor(off) and off.dim() > 0 else off
+            offset = off if offset is None else offset + off
+
         return replace(
             state,
-            weights=state.weights * self.scale,
-            hard_weights=None if hard is None else hard * self.scale,
+            weights=state.weights * scale,
+            hard_weights=None if hard is None else hard * scale,
             offset=offset,
         )
-
 
 @dataclass(eq=False)
 class GateReport(StageReport):

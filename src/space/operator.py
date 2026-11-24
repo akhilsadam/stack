@@ -12,7 +12,6 @@ from .util import *
 from .token import Token
 from .param import OpParamV3 as OpParam
 from .param.affine import *
-from .param.mag import MagCache
 from .report import OpReport
 
 @dataclass(eq=False)
@@ -61,10 +60,7 @@ class OpStack(nn.Module):
     def __init__(self, **kwargs):
         self.affine = MuxAffine()
         # self.affine = MuxAffineLN()
-
-
-        # the liveness of the channels, measured at every forward
-        self.cache = MagCache(spatial=getattr(self, 'SPATIAL', False))
+        # self.ln = LN()
 
         self.noise = nn.Parameter(torch.randn(self.shape))
 
@@ -115,14 +111,15 @@ class OpStack(nn.Module):
         stack = self.preprocess(stack, hardness)
         stack, working_set, memory = self.process_stack(stack, **kwargs) # read and process
 
-        self.cache.update(working_set) # cache activity
-        p, hp, term_entropy = self.p(temp)
+        p, hp, term_entropy = self.p(working_set, temp)
 
         # print('PC', p, self.cache.magnitudes)
 
+        # working_set = self.ln(working_set)    
+
         memory = self._STE_select(p, hp, memory, hardness) # select from memory
         working_set = self._STE_select(p, hp, working_set, hardness) # select from working set
-        # arity = self.compute_arity(p)
+        # arity = self.compute_arity(p)    print(working_set.shape)
 
         working_set = self.affine(working_set, hardness) # linear layer
 
@@ -143,11 +140,8 @@ class OpStack(nn.Module):
         return OpReport.collect(
             index=-1,
             reports=[
-                self.channel_report(
-                    cache_mag=getattr(self, 'cache_mag', None),
-                    cache_mag_field=getattr(self, 'cache_mag_field', None),
-                    temp=temp,
-                ),
+                self.channel_report(temp=temp),
+                # self.ln.report(temp=temp),
                 self.affine.report(temp=temp),
                 # self.gate_report(gate_temp),
             ],
