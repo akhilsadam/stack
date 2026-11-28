@@ -179,6 +179,7 @@ class _NoParams:
 
 class opt:
     def __init__(self, func):
+        super().__init__()
         self.func = func
 
     def __mul__(self, other):
@@ -262,7 +263,7 @@ class BSD(Derivative):
     def _bslap(self, x):
         return self._bsdxx(x) + self._bsdyy(x)   
 
-class Evaluator:
+class Evaluator(nn.Module):
     """Callable ``_eval`` backed by the ``qg`` spectral solver."""
 
     """A-priori one-step, only eval RHS"""
@@ -324,19 +325,19 @@ class Evaluator:
         
         # --- Precompute fixed grid fields ---
         y, x = torch.meshgrid(
-            torch.linspace(0, self.param.grid.Ly, self.grid.Ny, device=self.grid.device),
-            torch.linspace(0, self.param.grid.Lx, self.grid.Nx, device=self.grid.device),
+            torch.linspace(0, self.param.grid.Ly, self.grid.Ny, device=dev),
+            torch.linspace(0, self.param.grid.Lx, self.grid.Nx, device=dev),
             indexing='ij'
         )
-        self.x = x[None,None,...].expand(self.batch, -1, -1, -1)
-        self.y = y[None,None,...].expand(self.batch, -1, -1, -1)
+        self.register_buffer("x", x[None,None,...].expand(self.batch, -1, -1, -1))
+        self.register_buffer("y", y[None,None,...].expand(self.batch, -1, -1, -1))
 
         # --- Precompute fixed state fields ---
         state = self.construct_state()
-        self.q = self.q_phys.detach().clone()
-        self.psi = to_physical(self.derivative.inv_laplacian * (state.qh))
-        self.u = to_physical(-self.derivative.dy * (self.derivative.inv_laplacian * (state.qh)))
-        self.v = to_physical(self.derivative.dx * (self.derivative.inv_laplacian * (state.qh)))
+        self.register_buffer("q", self.q_phys.detach().clone())
+        self.register_buffer("psi", to_physical(self.derivative.inv_laplacian * (state.qh)))
+        self.register_buffer("u", to_physical(-self.derivative.dy * (self.derivative.inv_laplacian * (state.qh))))
+        self.register_buffer("v", to_physical(self.derivative.dx * (self.derivative.inv_laplacian * (state.qh))))
 
         # --- Precompute operators ---
         dx_scale = self.param.grid.Lx / self.param.grid.Nx

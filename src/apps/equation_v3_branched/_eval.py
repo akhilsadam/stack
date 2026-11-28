@@ -24,8 +24,9 @@ def build_vocab(**_kwargs) -> Vocab:
     tokens = [make_static_token(name, arity, func) for name, arity, func in token_specs]
     return Vocab(tokens=tokens, **_kwargs)
 
-class Evaluator():
+class Evaluator(nn.Module):
     def __init__(self, device='cpu', **_kwargs):
+        super().__init__()
         self.grid = _kwargs.get('grid', [1, 120])
         self.device = device
         assert len(self.grid) == 2
@@ -34,7 +35,7 @@ class Evaluator():
         # self.y = torch.linspace(0, 1, grid_size, device=device)
         # self.X, self.Y = torch.meshgrid(self.x, self.y, indexing="ij")
 
-        self.x = torch.linspace(-4,4,self.grid[-1], device=device)[None,...]
+        self.register_buffer("x", torch.linspace(-4,4,self.grid[-1], device=device)[None,...])
 
     def __call__(self, closure, **kwargs):
         return closure(x = self.x, **kwargs)

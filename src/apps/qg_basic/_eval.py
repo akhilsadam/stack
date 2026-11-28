@@ -175,12 +175,13 @@ class _NoParams:
     def items(self):
         return []
 
-class Evaluator:
+class Evaluator(nn.Module):
     """Callable ``_eval`` backed by the ``qg`` spectral solver."""
 
     """A-priori one-step, only eval RHS"""
 
     def __init__(self, seed: int = 42, device='cpu', **kwargs):
+        super().__init__()
         torch.manual_seed(seed)
         grid_size = kwargs.get('grid', (1, 1, 64, 64))[-1] # ASSUME square
 
@@ -240,15 +241,15 @@ class Evaluator:
             torch.linspace(0, self.param.grid.Lx, self.grid.Nx, device=self.grid.device),
             indexing='ij'
         )
-        self.x = x[None,None,...].expand(self.batch, -1, -1, -1)
-        self.y = y[None,None,...].expand(self.batch, -1, -1, -1)
+        self.register_buffer("x", x[None,None,...].expand(self.batch, -1, -1, -1))
+        self.register_buffer("y", y[None,None,...].expand(self.batch, -1, -1, -1))
 
         # --- Precompute fixed state fields ---
         state = self.construct_state()
-        self.q = self.q_phys.detach().clone()
-        self.psi = to_physical(self.derivative.inv_laplacian * (state.qh))
-        self.u = to_physical(-self.derivative.dy * (self.derivative.inv_laplacian * (state.qh)))
-        self.v = to_physical(self.derivative.dx * (self.derivative.inv_laplacian * (state.qh)))
+        self.register_buffer("q", self.q_phys.detach().clone())
+        self.register_buffer("psi", to_physical(self.derivative.inv_laplacian * (state.qh)))
+        self.register_buffer("u", to_physical(-self.derivative.dy * (self.derivative.inv_laplacian * (state.qh))))
+        self.register_buffer("v", to_physical(self.derivative.dx * (self.derivative.inv_laplacian * (state.qh))))
 
         # --- Precompute operators ---
         dx_scale = self.param.grid.Lx / self.param.grid.Nx

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 import traceback
 import logging
 
+from jpcm import draw
+from matplotlib import pyplot as plt
+
 from qg.solver.grid.cartesian import CartesianGrid
 from qg.solver.opt.derivative import Derivative
 from qg.solver.opt.basis import _state, to_physical, to_spectral
@@ -263,12 +266,13 @@ class BSD(Derivative):
     def _bslap(self, x):
         return self._bsdxx(x) + self._bsdyy(x)   
 
-class Evaluator:
+class Evaluator(nn.Module):
     """Callable ``_eval`` backed by the ``qg`` spectral solver."""
 
     """A-priori one-step, only eval RHS"""
 
     def __init__(self, seed: int = 42, device='cpu', **kwargs):
+        super().__init__()
         torch.manual_seed(seed)
         grid_size = kwargs.get('grid', (1, 1, 64, 64))[-1] # ASSUME square
 
@@ -287,8 +291,8 @@ class Evaluator:
             raise ValueError('PDE not found')
 
         self.target_pde = self.base_pde + ' ' + self.target_pde + ' +'
-        self.dt = 10.0 
-        
+        self.dt = 10.0
+
         print(f"Target PDE: {self.target_pde}")
 
         self.param = OmegaConf.create({
@@ -322,28 +326,31 @@ class Evaluator:
         from qg.solver.qg import QG
         self.solver = QG(self.param)
         self.random_state()
-        
+
+        # Build tensors on the correct device from the start
+        dev = torch.device(device)
+
         # --- Precompute fixed grid fields ---
         y, x = torch.meshgrid(
-            torch.linspace(0, self.param.grid.Ly, self.grid.Ny, device=self.grid.device),
-            torch.linspace(0, self.param.grid.Lx, self.grid.Nx, device=self.grid.device),
+            torch.linspace(0, self.param.grid.Ly, self.grid.Ny, device=dev),
+            torch.linspace(0, self.param.grid.Lx, self.grid.Nx, device=dev),
             indexing='ij'
         )
-        self.x = x[None,None,...].expand(self.batch, -1, -1, -1)
-        self.y = y[None,None,...].expand(self.batch, -1, -1, -1)
+        self.register_buffer("x", x[None,None,...].expand(self.batch, -1, -1, -1))
+        self.register_buffer("y", y[None,None,...].expand(self.batch, -1, -1, -1))
 
         # --- Precompute fixed state fields ---
         state = self.construct_state()
-        self.q = self.q_phys.detach().clone()
-        self.psi = to_physical(self.derivative.inv_laplacian * (state.qh))
-        self.u = to_physical(-self.derivative.dy * (self.derivative.inv_laplacian * (state.qh)))
-        self.v = to_physical(self.derivative.dx * (self.derivative.inv_laplacian * (state.qh)))
+        self.register_buffer("q", self.q_phys.detach().clone())
+        self.register_buffer("psi", to_physical(self.derivative.inv_laplacian * (state.qh)))
+        self.register_buffer("u", to_physical(-self.derivative.dy * (self.derivative.inv_laplacian * (state.qh))))
+        self.register_buffer("v", to_physical(self.derivative.dx * (self.derivative.inv_laplacian * (state.qh))))
 
         # --- Precompute operators ---
         dx_scale = self.param.grid.Lx / self.param.grid.Nx
         dy_scale = self.param.grid.Ly / self.param.grid.Ny
         d2_scale = dx_scale**2 + dy_scale**2
-        
+
         print(d2_scale)
 
         # self.dx_func = lambda z: to_physical(self.derivative.dx * (to_spectral(z)))
@@ -423,8 +430,6 @@ class Evaluator:
         return mse
 
     def plot(self, y_hat_hard, y_hat_soft, y, iter):
-        from jpcm import draw
-        from matplotlib import pyplot as plt
         fig, axs = plt.subplots(2, 4, figsize=(20, 10))
         
         im0 = axs[0,0].imshow(self._base.detach().cpu()[0,0], cmap=draw.cmap)

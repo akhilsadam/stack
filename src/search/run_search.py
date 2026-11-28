@@ -6,33 +6,27 @@ import torch
 import yaml
 from tqdm import tqdm
 
-# TODO: remove sys path nonsense
+# Add package root to path
 _PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PKG not in sys.path:
     sys.path.insert(0, _PKG)
 
 from space.tokenizer import Stack, Operator
-# from MCTS import MCTSStack as Stack, PUCTOperator as Operator
-# from search.SGD import Search
+from utils.fabric_utils import create_fabric, FabricDeviceManager
+from utils.run_manager import RunManager
 
-# app = "equation_v0_composition" # not great, stuck easily
-# app = "equation_v1_scalar" # works okay
-# app = "equation_v1a_scalar" # fails init
-# app = "equation_v2_branched" # + (fails)
-# app = "equation_v3_branched" # * (fails)
-# app = "qg_basic"
-# app = "qg_apriori"
+# App to run
 app = "qg_apriori_deep"
-# app = "qg_apost"
 
 
 import importlib.util
-spec = importlib.util.spec_from_file_location("eval", f"apps/{app}/_eval.py")
-eval = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(eval)
+eval_path = os.path.join(_PKG, f"apps/{app}/_eval.py")
+spec = importlib.util.spec_from_file_location("eval", eval_path)
+eval_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(eval_module)
 
-build_vocab = eval.build_vocab
-Evaluator   = eval.Evaluator
+build_vocab = eval_module.build_vocab
+Evaluator   = eval_module.Evaluator
 _CONFIG     = os.path.join(_PKG, f"apps/{app}/config.yaml")
 
 
@@ -41,53 +35,57 @@ def main():
     with open(_CONFIG) as f:
         cfg = yaml.safe_load(f)
 
-    torch.manual_seed(cfg.get("seed", 42))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # ── Fabric setup ───────────────────────────────────────────────
+    accelerator = cfg.get("accelerator", "auto")
+    precision = cfg.get("precision", "32-true")
+    devices = cfg.get("devices", "auto")
+
+    fabric = create_fabric(accelerator=accelerator, precision=precision, devices=devices)
+    fabric.launch()
+    manager = FabricDeviceManager(fabric)
+
+    device = fabric.device
     print(f"Device: {device}")
     print(f"Package root: {_PKG}")
+
+    # ── RunManager for experiment tracking ─────────────────────────
+    run_manager = RunManager(
+        fabric=fabric,
+        app_name=app,
+        config=cfg,
+    )
+
+    # Log hyperparameters
+    run_manager.log_hyperparams(cfg)
 
     # ── build components ───────────────────────────────────────────
     print("Building vocabulary and QG evaluator …")
     vocab = build_vocab(_Operator=Operator, **cfg)
-    
+
     tokenizer = Stack(
         init_str = cfg.get('init'),
         vocab=vocab,
         **cfg,
     )
 
-    tokenizer = tokenizer.to(device)
-    tokenizer._train(Evaluator(**cfg), **cfg)
+    # Move tokenizer to device using Fabric
+    tokenizer = manager.to_device(tokenizer)
 
-    # # ── search ─────────────────────────────────────────────────────
-    # init_rpn   = cfg.get("PDE_init", cfg["PDE"])
-    # target_rpn = cfg["PDE"]
+    # Create evaluator with device (buffers registered internally)
+    evaluator = Evaluator(device=device, **cfg)
+    # Move to device via Fabric (handles buffers automatically since they're registered)
+    evaluator = manager.to_device(evaluator)
 
-    # print(f"\n{'='*60}")
-    # print(f"Target PDE:  {evaluator.target_pde}")
-    # print(f"Base PDE:    {evaluator.base_pde}")
-    # print(f"Initial Term: {init_rpn}")
-    # print(f"Steps: {sgd.steps} with lr: {sgd.lr}")
-    # print(f"{'='*60}\n")
+    # RunManager's context manager patches plt.savefig, logging metrics and
+    # stdout/stderr — the training loop needs no knowledge of any of it.
+    with run_manager:
+        tokenizer._train(evaluator, **cfg)
 
-    # best_rpn, best_loss = sgd.search(init_rpn)
+    # Save final checkpoint
+    run_manager.save_artifact("tokenizer_final", tokenizer)
+    run_manager.finalize()
 
-    # # ── results ────────────────────────────────────────────────────
-    # print(f"\n{'='*60}")
-    # print("Search finished.")
-    # print(f"Target PDE:  {evaluator.target_pde}")
-    # print(f"Base PDE:    {evaluator.base_pde}")
-    # print(f"Initial Term: {init_rpn}")
-    # print(f"Steps: {sgd.steps}  |  Pop size: {sgd.pop_size}  "
-    #       f"|  Noise σ: {sgd.noise_std}  |  lr: {sgd.lr}")
-    # print(f"\n{'-'*60}")
-    # print(f"Best Term:  {best_rpn}")
-    # print(f"Best loss: {best_loss:.6e}")
-    # LaTeX_t = evaluator.to_latex(target_rpn)
-    # LaTeX_b = evaluator.to_latex(best_rpn)
-    # print(f"Target: ${LaTeX_t}$")
-    # print(f"Best:   ${LaTeX_b}$")
-    # print(f"{'='*60}")
+    print(f"\nRun complete. Output saved to: {run_manager.run_dir}")
 
 
 if __name__ == "__main__":

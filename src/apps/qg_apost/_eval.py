@@ -180,7 +180,7 @@ def build_vocab(**_kwargs) -> Vocab:
     return Vocab(tokens=tokens, **_kwargs)
 
 
-class Evaluator:
+class Evaluator(nn.Module):
     """Callable ``_eval`` backed by the ``qg`` spectral solver."""
 
     def __init__(self, seed: int = 42, device='cpu', **kwargs):
@@ -243,11 +243,11 @@ class Evaluator:
             torch.linspace(0, self.param.grid.Lx, self.param.grid.Nx, device=self.param.grid.device),
             indexing='ij'
         )
-        self.x = x[None,None,...].expand(self.batch, -1, -1, -1)
-        self.y = y[None,None,...].expand(self.batch, -1, -1, -1)
+        self.register_buffer("x", x[None,None,...].expand(self.batch, -1, -1, -1))
+        self.register_buffer("y", y[None,None,...].expand(self.batch, -1, -1, -1))
 
         # --- Initial state vorticity ---
-        self.q = self.q_phys.detach().clone()
+        self.register_buffer("q", self.q_phys.detach().clone())
 
         # --- Precompute operators ---
         dx_scale = self.param.grid.Lx / self.param.grid.Nx
